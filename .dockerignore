@@ -1,0 +1,12 @@
+.git
+.gitignore
+.DS_Store
+.idea
+.vscode
+**/*.test
+**/*.out
+**/*.log
+**/data
+**/tmp
+**/.cache
+**/node_modules
