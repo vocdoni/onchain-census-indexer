@@ -27,8 +27,8 @@ var errRetryable = errors.New("retryable error")
 type Config struct {
 	Client       *rpc.Client
 	Store        *store.Store
+	ChainID      uint64
 	Contract     common.Address
-	ABI          abi.ABI
 	StartBlock   uint64
 	PollInterval time.Duration
 	BatchSize    uint64
@@ -38,6 +38,7 @@ type Config struct {
 type Indexer struct {
 	client       *rpc.Client
 	store        *store.Store
+	chainID      uint64
 	contract     common.Address
 	abi          abi.ABI
 	eventID      common.Hash
@@ -54,7 +55,14 @@ func New(cfg Config) (*Indexer, error) {
 	if cfg.Store == nil {
 		return nil, fmt.Errorf("store is required")
 	}
-	event, ok := cfg.ABI.Events[weightChangedEventName]
+	if cfg.ChainID == 0 {
+		return nil, fmt.Errorf("chainID is required")
+	}
+	parsedABI, err := loadABI()
+	if err != nil {
+		return nil, fmt.Errorf("load ABI: %w", err)
+	}
+	event, ok := parsedABI.Events[weightChangedEventName]
 	if !ok {
 		return nil, fmt.Errorf("event %s not found in ABI", weightChangedEventName)
 	}
@@ -69,8 +77,9 @@ func New(cfg Config) (*Indexer, error) {
 	return &Indexer{
 		client:       cfg.Client,
 		store:        cfg.Store,
+		chainID:      cfg.ChainID,
 		contract:     cfg.Contract,
-		abi:          cfg.ABI,
+		abi:          parsedABI,
 		eventID:      event.ID,
 		startBlock:   cfg.StartBlock,
 		pollInterval: pollInterval,
@@ -80,7 +89,7 @@ func New(cfg Config) (*Indexer, error) {
 
 // Run starts the indexer loop until the context is canceled.
 func (i *Indexer) Run(ctx context.Context) error {
-	lastBlock, ok, err := i.store.LastIndexedBlock(ctx)
+	lastBlock, ok, err := i.store.LastIndexedBlock(ctx, i.chainID, i.contract)
 	if err != nil {
 		return err
 	}
@@ -93,6 +102,7 @@ func (i *Indexer) Run(ctx context.Context) error {
 	}
 
 	log.Infow("indexer starting",
+		"chainID", i.chainID,
 		"contract", i.contract.Hex(),
 		"startBlock", i.startBlock,
 		"lastIndexedBlock", lastBlock,
@@ -127,6 +137,7 @@ func (i *Indexer) syncOnce(ctx context.Context, lastBlock *uint64) error {
 	}
 	log.Debugw("head block fetched", "head", head, "lastIndexedBlock", *lastBlock)
 	if *lastBlock >= head {
+		log.Debugw("no new blocks to index", "head", head, "lastIndexedBlock", *lastBlock)
 		return nil
 	}
 	for *lastBlock < head {
@@ -147,7 +158,7 @@ func (i *Indexer) syncOnce(ctx context.Context, lastBlock *uint64) error {
 		if err != nil {
 			return err
 		}
-		if err := i.store.SaveEvents(ctx, events, to); err != nil {
+		if err := i.store.SaveEvents(ctx, i.chainID, i.contract, events, to); err != nil {
 			return fmt.Errorf("store events: %w", err)
 		}
 		if len(events) > 0 {
@@ -199,6 +210,8 @@ func (i *Indexer) parseLogs(logs []gethtypes.Log) ([]store.Event, error) {
 		}
 		account := common.HexToAddress(logEntry.Topics[1].Hex())
 		results = append(results, store.Event{
+			ChainID:        i.chainID,
+			Contract:       i.contract.Hex(),
 			Account:        account.Hex(),
 			PreviousWeight: decoded.PreviousWeight.String(),
 			NewWeight:      decoded.NewWeight.String(),

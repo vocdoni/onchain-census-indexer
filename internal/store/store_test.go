@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/vocdoni/davinci-node/db"
 	"github.com/vocdoni/davinci-node/db/metadb"
 )
@@ -21,16 +22,21 @@ func TestStoreListEvents(t *testing.T) {
 	}()
 	store := New(database)
 
+	primaryContract := common.HexToAddress("0x1111111111111111111111111111111111111111")
 	events := []Event{
-		{Account: "0xabc", PreviousWeight: "1", NewWeight: "2", BlockNumber: 3, LogIndex: 0},
-		{Account: "0xdef", PreviousWeight: "2", NewWeight: "3", BlockNumber: 1, LogIndex: 0},
-		{Account: "0x123", PreviousWeight: "3", NewWeight: "4", BlockNumber: 2, LogIndex: 1},
+		{ChainID: 1, Contract: primaryContract.Hex(), Account: "0xabc", PreviousWeight: "1", NewWeight: "2", BlockNumber: 3, LogIndex: 0},
+		{ChainID: 1, Contract: primaryContract.Hex(), Account: "0xdef", PreviousWeight: "2", NewWeight: "3", BlockNumber: 1, LogIndex: 0},
+		{ChainID: 1, Contract: primaryContract.Hex(), Account: "0x123", PreviousWeight: "3", NewWeight: "4", BlockNumber: 2, LogIndex: 1},
+		{ChainID: 2, Contract: "0x2222222222222222222222222222222222222222", Account: "0x999", PreviousWeight: "4", NewWeight: "5", BlockNumber: 1, LogIndex: 0},
 	}
-	if err := store.SaveEvents(ctx, events, 3); err != nil {
+	if err := store.SaveEvents(ctx, 1, primaryContract, events[:3], 3); err != nil {
+		t.Fatalf("save events: %v", err)
+	}
+	if err := store.SaveEvents(ctx, 2, common.HexToAddress("0x2222222222222222222222222222222222222222"), events[3:], 1); err != nil {
 		t.Fatalf("save events: %v", err)
 	}
 
-	lastBlock, ok, err := store.LastIndexedBlock(ctx)
+	lastBlock, ok, err := store.LastIndexedBlock(ctx, 1, primaryContract)
 	if err != nil {
 		t.Fatalf("last indexed block: %v", err)
 	}
@@ -48,17 +54,17 @@ func TestStoreListEvents(t *testing.T) {
 	}{
 		{
 			name:           "asc_first_two",
-			opts:           ListOptions{First: 2, Skip: 0, OrderBy: "blockNumber", OrderDirection: "asc"},
+			opts:           ListOptions{First: 2, Skip: 0, OrderBy: "blockNumber", OrderDirection: "asc", ChainID: 1, Contract: primaryContract},
 			wantBlockOrder: []uint64{1, 2},
 		},
 		{
 			name:           "asc_skip_one",
-			opts:           ListOptions{First: 1, Skip: 1, OrderBy: "blockNumber", OrderDirection: "asc"},
+			opts:           ListOptions{First: 1, Skip: 1, OrderBy: "blockNumber", OrderDirection: "asc", ChainID: 1, Contract: primaryContract},
 			wantBlockOrder: []uint64{2},
 		},
 		{
 			name:           "desc_first_one",
-			opts:           ListOptions{First: 1, Skip: 0, OrderBy: "blockNumber", OrderDirection: "desc"},
+			opts:           ListOptions{First: 1, Skip: 0, OrderBy: "blockNumber", OrderDirection: "desc", ChainID: 1, Contract: primaryContract},
 			wantBlockOrder: []uint64{3},
 		},
 	}

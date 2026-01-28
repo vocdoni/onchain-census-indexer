@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/graphql-go/graphql"
 	"github.com/vocdoni/davinci-node/db"
 	"github.com/vocdoni/davinci-node/db/metadb"
@@ -39,15 +40,16 @@ func TestSchemaQuery(t *testing.T) {
 	}()
 	eventStore := store.New(database)
 
+	contract := common.HexToAddress("0x1111111111111111111111111111111111111111")
 	events := []store.Event{
-		{Account: "0xabc", PreviousWeight: "1", NewWeight: "2", BlockNumber: 1, LogIndex: 0},
-		{Account: "0xdef", PreviousWeight: "2", NewWeight: "3", BlockNumber: 2, LogIndex: 0},
+		{ChainID: 1, Contract: contract.Hex(), Account: "0xabc", PreviousWeight: "1", NewWeight: "2", BlockNumber: 1, LogIndex: 0},
+		{ChainID: 1, Contract: contract.Hex(), Account: "0xdef", PreviousWeight: "2", NewWeight: "3", BlockNumber: 2, LogIndex: 0},
 	}
-	if err := eventStore.SaveEvents(ctx, events, 2); err != nil {
+	if err := eventStore.SaveEvents(ctx, 1, contract, events, 2); err != nil {
 		t.Fatalf("save events: %v", err)
 	}
 
-	schema, err := NewSchema(eventStore)
+	schema, err := NewSchema(eventStore, 1, contract)
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
 	}

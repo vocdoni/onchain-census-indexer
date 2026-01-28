@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/graphql-go/graphql"
 	"github.com/graphql-go/graphql/language/ast"
 
@@ -11,9 +12,15 @@ import (
 )
 
 // NewSchema builds the GraphQL schema for querying WeightChanged events.
-func NewSchema(eventStore *store.Store) (graphql.Schema, error) {
+func NewSchema(eventStore *store.Store, chainID uint64, contract common.Address) (graphql.Schema, error) {
 	if eventStore == nil {
 		return graphql.Schema{}, fmt.Errorf("store is required")
+	}
+	if chainID == 0 {
+		return graphql.Schema{}, fmt.Errorf("chainID is required")
+	}
+	if contract == (common.Address{}) {
+		return graphql.Schema{}, fmt.Errorf("contract is required")
 	}
 	bigIntScalar := graphql.NewScalar(graphql.ScalarConfig{
 		Name: "BigInt",
@@ -116,6 +123,8 @@ func NewSchema(eventStore *store.Store) (graphql.Schema, error) {
 						Skip:           skip,
 						OrderBy:        orderBy,
 						OrderDirection: orderDirection,
+						ChainID:        chainID,
+						Contract:       contract,
 					})
 				},
 			},

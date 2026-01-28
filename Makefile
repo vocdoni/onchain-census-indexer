@@ -1,6 +1,8 @@
 IMAGE ?= onchain-census-indexer
 CONTAINER ?= onchain-census-indexer
 
+.DEFAULT_GOAL := run
+
 .PHONY: build run check-env
 
 check-env:

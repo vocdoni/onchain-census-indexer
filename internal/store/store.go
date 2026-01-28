@@ -7,16 +7,20 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/vocdoni/davinci-node/db"
 )
 
 const (
-	eventKeyPrefix   = "evt:"
-	lastBlockKeyName = "meta:last_block"
+	eventKeyPrefix       = "evt:"
+	lastBlockKeyPrefix   = "meta:last_block:"
+	contractAddressBytes = 20
 )
 
 // Event represents a WeightChanged event stored in the database.
 type Event struct {
+	ChainID        uint64 `json:"chainId"`
+	Contract       string `json:"contract"`
 	Account        string `json:"account"`
 	PreviousWeight string `json:"previousWeight"`
 	NewWeight      string `json:"newWeight"`
@@ -35,11 +39,11 @@ func New(database db.Database) *Store {
 }
 
 // LastIndexedBlock returns the last indexed block number if present.
-func (s *Store) LastIndexedBlock(ctx context.Context) (uint64, bool, error) {
+func (s *Store) LastIndexedBlock(ctx context.Context, chainID uint64, contract common.Address) (uint64, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
 	}
-	data, err := s.db.Get([]byte(lastBlockKeyName))
+	data, err := s.db.Get(lastBlockKey(chainID, contract))
 	if err != nil {
 		if errors.Is(err, db.ErrKeyNotFound) {
 			return 0, false, nil
@@ -53,10 +57,16 @@ func (s *Store) LastIndexedBlock(ctx context.Context) (uint64, bool, error) {
 	return block, true, nil
 }
 
-// SaveEvents persists the provided events and updates the last indexed block.
-func (s *Store) SaveEvents(ctx context.Context, events []Event, lastIndexedBlock uint64) error {
+// SaveEvents persists the provided events and updates the last indexed block for the contract.
+func (s *Store) SaveEvents(ctx context.Context, chainID uint64, contract common.Address, events []Event, lastIndexedBlock uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if chainID == 0 {
+		return fmt.Errorf("chainID is required")
+	}
+	if contract == (common.Address{}) {
+		return fmt.Errorf("contract address is required")
 	}
 	tx := s.db.WriteTx()
 	defer tx.Discard()
@@ -65,7 +75,14 @@ func (s *Store) SaveEvents(ctx context.Context, events []Event, lastIndexedBlock
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		key := eventKey(event.BlockNumber, event.LogIndex)
+		if event.ChainID == 0 {
+			return fmt.Errorf("event chainID is required")
+		}
+		if !common.IsHexAddress(event.Contract) {
+			return fmt.Errorf("event contract is invalid")
+		}
+		contractAddr := common.HexToAddress(event.Contract)
+		key := eventKey(event.ChainID, contractAddr, event.BlockNumber, event.LogIndex)
 		payload, err := json.Marshal(event)
 		if err != nil {
 			return fmt.Errorf("marshal event: %w", err)
@@ -74,7 +91,7 @@ func (s *Store) SaveEvents(ctx context.Context, events []Event, lastIndexedBlock
 			return fmt.Errorf("store event: %w", err)
 		}
 	}
-	if err := tx.Set([]byte(lastBlockKeyName), encodeUint64(lastIndexedBlock)); err != nil {
+	if err := tx.Set(lastBlockKey(chainID, contract), encodeUint64(lastIndexedBlock)); err != nil {
 		return fmt.Errorf("store last indexed block: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -89,6 +106,8 @@ type ListOptions struct {
 	Skip           int
 	OrderBy        string
 	OrderDirection string
+	ChainID        uint64
+	Contract       common.Address
 }
 
 // ListEvents returns events matching the provided options.
@@ -111,23 +130,31 @@ func (s *Store) ListEvents(ctx context.Context, opts ListOptions) ([]Event, erro
 		orderDirection = "asc"
 	}
 
+	prefix := []byte(eventKeyPrefix)
+	if opts.ChainID != 0 || opts.Contract != (common.Address{}) {
+		if opts.ChainID == 0 || opts.Contract == (common.Address{}) {
+			return nil, fmt.Errorf("both chainID and contract are required for filtering")
+		}
+		prefix = eventPrefix(opts.ChainID, opts.Contract)
+	}
+
 	if orderDirection == "desc" {
-		return s.listEventsDesc(ctx, opts)
+		return s.listEventsDesc(ctx, opts, prefix)
 	}
 	if orderDirection != "asc" {
 		return nil, fmt.Errorf("unsupported orderDirection: %s", orderDirection)
 	}
 
-	return s.listEventsAsc(ctx, opts)
+	return s.listEventsAsc(ctx, opts, prefix)
 }
 
-func (s *Store) listEventsAsc(ctx context.Context, opts ListOptions) ([]Event, error) {
+func (s *Store) listEventsAsc(ctx context.Context, opts ListOptions, prefix []byte) ([]Event, error) {
 	var (
 		results []Event
 		skipped int
 		iterErr error
 	)
-	err := s.db.Iterate([]byte(eventKeyPrefix), func(_, value []byte) bool {
+	err := s.db.Iterate(prefix, func(_, value []byte) bool {
 		if err := ctx.Err(); err != nil {
 			iterErr = err
 			return false
@@ -156,12 +183,12 @@ func (s *Store) listEventsAsc(ctx context.Context, opts ListOptions) ([]Event, e
 	return results, nil
 }
 
-func (s *Store) listEventsDesc(ctx context.Context, opts ListOptions) ([]Event, error) {
+func (s *Store) listEventsDesc(ctx context.Context, opts ListOptions, prefix []byte) ([]Event, error) {
 	var (
 		all     []Event
 		iterErr error
 	)
-	err := s.db.Iterate([]byte(eventKeyPrefix), func(_, value []byte) bool {
+	err := s.db.Iterate(prefix, func(_, value []byte) bool {
 		if err := ctx.Err(); err != nil {
 			iterErr = err
 			return false
@@ -194,11 +221,27 @@ func (s *Store) listEventsDesc(ctx context.Context, opts ListOptions) ([]Event, 
 	return all[start:end], nil
 }
 
-func eventKey(blockNumber uint64, logIndex uint32) []byte {
-	key := make([]byte, len(eventKeyPrefix)+8+4)
+func eventKey(chainID uint64, contract common.Address, blockNumber uint64, logIndex uint32) []byte {
+	key := make([]byte, len(eventKeyPrefix)+8+contractAddressBytes+8+4)
 	copy(key, eventKeyPrefix)
-	binary.BigEndian.PutUint64(key[len(eventKeyPrefix):], blockNumber)
-	binary.BigEndian.PutUint32(key[len(eventKeyPrefix)+8:], logIndex)
+	offset := len(eventKeyPrefix)
+	binary.BigEndian.PutUint64(key[offset:], chainID)
+	offset += 8
+	copy(key[offset:], contract.Bytes())
+	offset += contractAddressBytes
+	binary.BigEndian.PutUint64(key[offset:], blockNumber)
+	offset += 8
+	binary.BigEndian.PutUint32(key[offset:], logIndex)
+	return key
+}
+
+func eventPrefix(chainID uint64, contract common.Address) []byte {
+	key := make([]byte, len(eventKeyPrefix)+8+contractAddressBytes)
+	copy(key, eventKeyPrefix)
+	offset := len(eventKeyPrefix)
+	binary.BigEndian.PutUint64(key[offset:], chainID)
+	offset += 8
+	copy(key[offset:], contract.Bytes())
 	return key
 }
 
@@ -213,4 +256,14 @@ func decodeUint64(value []byte) (uint64, error) {
 		return 0, fmt.Errorf("invalid uint64 length: %d", len(value))
 	}
 	return binary.BigEndian.Uint64(value), nil
+}
+
+func lastBlockKey(chainID uint64, contract common.Address) []byte {
+	key := make([]byte, len(lastBlockKeyPrefix)+8+contractAddressBytes)
+	copy(key, lastBlockKeyPrefix)
+	offset := len(lastBlockKeyPrefix)
+	binary.BigEndian.PutUint64(key[offset:], chainID)
+	offset += 8
+	copy(key[offset:], contract.Bytes())
+	return key
 }

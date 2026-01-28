@@ -1,22 +1,53 @@
 # Onchain Census Indexer
 
-A small Go service that indexes the `WeightChanged` event from a smart contract using one or more RPC endpoints (with automatic rotation), stores the events in a local Pebble database, and exposes them via a GraphQL API.
+A Go service that indexes the `WeightChanged` event from multiple contracts (across multiple chains) using rotating RPC endpoints, stores events in a local Pebble database, and serves them through a GraphQL API.
 
-The service is configured via CLI flags or environment variables (flags take precedence). It uses:
+## What it does
 
-- `github.com/vocdoni/davinci-node/web3/rpc` for RPC pooling and rotation
-- `github.com/vocdoni/davinci-node/db/metadb` with `db.TypePebble` for local persistence
-- `github.com/graphql-go/graphql` for the GraphQL endpoint
+- Indexes `WeightChanged(account, previousWeight, newWeight)` from one or more contracts.
+- Supports multiple chains in the same process.
+- Persists events locally with resume support per contract.
+- Serves GraphQL per contract at `/{chainID}/{contractAddress}/graphql`.
+- Root `/` shows a plain‑text list of available GraphQL endpoints.
 
-## Features
+## Architecture
 
-- Start indexing from a given block number
-- Rotates between multiple RPC endpoints automatically
-- Persists events in a local Pebble DB
-- GraphQL endpoint compatible with the provided schema/query
-- Dockerized with env-var configuration
+- **Indexer service**: manages one indexer per registered contract.
+- **API service**: exposes GraphQL endpoints per contract.
+- Both services only depend on the database; main wires config and services.
 
-## GraphQL Schema (reference)
+Key dependencies:
+
+- `github.com/vocdoni/davinci-node/web3/rpc` (RPC pool + rotation)
+- `github.com/vocdoni/davinci-node/db/metadb` with `db.TypePebble`
+- `github.com/graphql-go/graphql`
+
+## Contract format
+
+Contracts are provided as a single string with entries separated by commas/spaces/semicolons:
+
+```
+chainID:contractAddress:blockNumber
+```
+
+Example:
+
+```
+42220:0xYourContract:123456,1:0xAnotherContract:987654
+```
+
+Each entry defines:
+- **chainID**: the EVM chain ID
+- **contractAddress**: 0x address
+- **blockNumber**: start block (inclusive)
+
+## GraphQL
+
+**Endpoint:** `http://localhost:8080/{chainID}/{contractAddress}/graphql`  
+**Health check:** `http://localhost:8080/healthz`  
+**Root listing:** `http://localhost:8080/`
+
+### Schema (reference)
 
 ```
 type Account @entity(immutable: false) {
@@ -31,7 +62,7 @@ type WeightChangeEvent @entity(immutable: true) {
 }
 ```
 
-## Example Query (reference)
+### Example query (reference)
 
 ```
 query GetWeightChangeEvents($first: Int!, $skip: Int!) {
@@ -50,65 +81,65 @@ query GetWeightChangeEvents($first: Int!, $skip: Int!) {
 }
 ```
 
-## Contract ABI (embedded in code; reference copy below)
+## Contract ABI (embedded)
+
+The ABI is embedded in `internal/indexer/abi.go`:
 
 ```
 [
-    {
-        "name": "WeightChanged",
-        "type": "event",
-        "inputs": [
-            {
-                "name": "account",
-                "type": "address",
-                "indexed": true,
-                "internalType": "address"
-            },
-            {
-                "name": "previousWeight",
-                "type": "uint88",
-                "indexed": false,
-                "internalType": "uint88"
-            },
-            {
-                "name": "newWeight",
-                "type": "uint88",
-                "indexed": false,
-                "internalType": "uint88"
-            }
-        ],
-        "anonymous": false
-    }
+  {
+    "name": "WeightChanged",
+    "type": "event",
+    "inputs": [
+      {"name": "account", "type": "address", "indexed": true},
+      {"name": "previousWeight", "type": "uint88", "indexed": false},
+      {"name": "newWeight", "type": "uint88", "indexed": false}
+    ],
+    "anonymous": false
+  }
 ]
 ```
+
+## Configuration
+
+Flags override environment variables. Defaults shown where available.
+
+| Flag | Env | Default | Description |
+| --- | --- | --- | --- |
+| `--contracts` | `CONTRACTS` | required | Comma/space/semicolon‑separated `chainID:contractAddress:blockNumber` entries |
+| `--rpc` (repeat) | `RPCS` / `RPC_ENDPOINTS` | required | RPC endpoints (can cover multiple chain IDs) |
+| `--db.path` | `DB_PATH` | `data` (local) / `/data` (docker) | DB path |
+| `--http.listen` | `LISTEN_ADDR` / `LISTEN` | `:8080` | HTTP listen address |
+| `--indexer.pollInterval` | `POLL_INTERVAL` | `5s` | Polling interval |
+| `--indexer.batchSize` | `BATCH_SIZE` | `2000` | Log batch size |
+| `--log.level` | `LOG_LEVEL` | `debug` | Log level |
+
+Notes:
+- `--contract` is deprecated in favor of `--contracts`.
+- For env values, use comma‑separated lists (avoid wrapping in quotes that become part of the value).
 
 ## Local usage
 
 ### Requirements
 
-- Go 1.21+ (the module currently targets Go 1.25.x)
-- A working C toolchain if building with cgo (macOS: `xcode-select --install`)
+- Go 1.21+ (module targets Go 1.25.x)
+- C toolchain if building with cgo (macOS: `xcode-select --install`)
 
 ### Run with flags
 
 ```
 go run ./cmd/onchain-census-indexer \
-  --contract 0xYourContract \
-  --start-block 123456 \
+  --contracts 42220:0xYourContract:123456,1:0xAnotherContract:987654 \
   --rpc https://rpc1.example \
   --rpc https://rpc2.example \
-  --log-level debug
+  --log.level debug
 ```
-
-GraphQL endpoint: `http://localhost:8080/graphql`  
-Health check: `http://localhost:8080/healthz`
 
 ### Run with env vars
 
 ```
-CONTRACT=0xYourContract \
-START_BLOCK=123456 \
-RPCS="https://rpc1.example,https://rpc2.example" \
+CONTRACTS=42220:0xYourContract:123456,1:0xAnotherContract:987654 \
+RPCS=https://rpc1.example,https://rpc2.example \
 LOG_LEVEL=debug \
 go run ./cmd/onchain-census-indexer
 ```
@@ -116,8 +147,6 @@ go run ./cmd/onchain-census-indexer
 ## Docker usage
 
 ### .env file
-
-Copy and edit the example:
 
 ```
 cp .env.example .env
@@ -128,12 +157,6 @@ cp .env.example .env
 ```
 make run
 ```
-
-This will:
-
-- Build the Docker image
-- Run the container with `.env`
-- Mount `./data` into `/data` inside the container
 
 ### Manual docker run
 
@@ -146,23 +169,9 @@ docker run --rm -p 8080:8080 \
   onchain-census-indexer
 ```
 
-## Configuration
-
-Flags override env vars. Defaults shown where available.
-
-| Flag | Env | Default | Description |
-| --- | --- | --- | --- |
-| `--contract` | `CONTRACT` / `CONTRACT_ADDRESS` | required | Contract address to index |
-| `--start-block` | `START_BLOCK` | `0` | Start block (inclusive) |
-| `--rpc` (repeat) | `RPCS` / `RPC_ENDPOINTS` | required | RPC endpoints |
-| `--db-path` | `DB_PATH` | `data` (local) / `/data` (docker) | DB path |
-| `--listen` | `LISTEN_ADDR` / `LISTEN` | `:8080` | HTTP listen address |
-| `--poll-interval` | `POLL_INTERVAL` | `5s` | Polling interval |
-| `--batch-size` | `BATCH_SIZE` | `2000` | Log batch size |
-| `--log-level` | `LOG_LEVEL` | `debug` | Log level |
-
 ## Notes
 
-- RPC endpoints must all be on the same chain ID.
-- The indexer stores the last indexed block in the database to resume safely on restart.
-- GraphQL uses a custom `BigInt` scalar that is serialized as a string.
+- RPC endpoints must cover every chain ID listed in `CONTRACTS`.
+- The indexer stores the last indexed block per contract to resume safely on restart.
+- `BigInt` values are serialized as strings in GraphQL responses.
+- Ordering by `blockNumber` follows storage order (chain ID + contract + block number).
