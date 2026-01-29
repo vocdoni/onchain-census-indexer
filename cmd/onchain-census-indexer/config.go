@@ -16,7 +16,7 @@ import (
 
 type Config struct {
 	ContractsRaw string                   `mapstructure:"contracts"`
-	Contracts    []indexer.ContractConfig `mapstructure:"-"`
+	Contracts    []indexer.ContractInfo `mapstructure:"-"`
 	RPCs         []string                 `mapstructure:"rpc"`
 	DB           DBConfig                 `mapstructure:"db"`
 	HTTP         HTTPConfig               `mapstructure:"http"`
@@ -105,14 +105,14 @@ func LoadConfig() (*Config, error) {
 	return cfg, nil
 }
 
-func parseContractSpecs(value string) ([]indexer.ContractConfig, error) {
+func parseContractSpecs(value string) ([]indexer.ContractInfo, error) {
 	entries := strings.FieldsFunc(value, func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == ';'
 	})
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("no contract entries provided")
 	}
-	out := make([]indexer.ContractConfig, 0, len(entries))
+	out := make([]indexer.ContractInfo, 0, len(entries))
 	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)
 		parts := strings.Split(entry, ":")
@@ -131,9 +131,9 @@ func parseContractSpecs(value string) ([]indexer.ContractConfig, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid start block in %q", entry)
 		}
-		out = append(out, indexer.ContractConfig{
+		out = append(out, indexer.ContractInfo{
 			ChainID:    chainID,
-			Contract:   common.HexToAddress(address),
+			Address:   common.HexToAddress(address),
 			StartBlock: startBlock,
 		})
 	}

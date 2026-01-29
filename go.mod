@@ -8,6 +8,7 @@ require (
 	github.com/graphql-go/handler v0.2.4
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
+	github.com/vocdoni/davinci-contracts v0.0.36
 	github.com/vocdoni/davinci-node v0.0.0-20260127091903-09c1157015e5
 )
 
@@ -37,6 +38,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/klauspost/compress v1.18.3 // indirect

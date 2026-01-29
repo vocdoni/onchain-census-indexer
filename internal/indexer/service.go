@@ -27,22 +27,27 @@ type ServiceConfig struct {
 	AutoRPCMaxEndpoints  int
 }
 
-// ContractConfig defines a contract indexing target.
-type ContractConfig struct {
+// ContractInfo defines a contract indexing target.
+type ContractInfo struct {
 	ChainID    uint64         `json:"chainId"`
-	Contract   common.Address `json:"contract"`
+	Address    common.Address `json:"contract"`
 	StartBlock uint64         `json:"startBlock"`
 }
 
-type contractConfigJSON struct {
+// Key returns a unique key for the contract config.
+func (c ContractInfo) Key() string {
+	return fmt.Sprintf("%d:%s", c.ChainID, strings.ToLower(c.Address.Hex()))
+}
+
+type contractInfoJSON struct {
 	ChainID    uint64 `json:"chainId"`
 	Contract   string `json:"contract"`
 	StartBlock uint64 `json:"startBlock"`
 }
 
 // UnmarshalJSON parses contract config from JSON with hex address string.
-func (c *ContractConfig) UnmarshalJSON(data []byte) error {
-	var tmp contractConfigJSON
+func (c *ContractInfo) UnmarshalJSON(data []byte) error {
+	var tmp contractInfoJSON
 	if err := json.Unmarshal(data, &tmp); err != nil {
 		return err
 	}
@@ -53,7 +58,7 @@ func (c *ContractConfig) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("invalid contract address")
 	}
 	c.ChainID = tmp.ChainID
-	c.Contract = common.HexToAddress(tmp.Contract)
+	c.Address = common.HexToAddress(tmp.Contract)
 	c.StartBlock = tmp.StartBlock
 	return nil
 }
@@ -135,9 +140,9 @@ func (s *Service) syncContracts(ctx context.Context, errCh chan<- error) {
 		if !common.IsHexAddress(record.Contract) {
 			continue
 		}
-		cfg := ContractConfig{
+		cfg := ContractInfo{
 			ChainID:    record.ChainID,
-			Contract:   common.HexToAddress(record.Contract),
+			Address:    common.HexToAddress(record.Contract),
 			StartBlock: record.StartBlock,
 		}
 		if err := s.ensureRegistered(ctx, cfg, errCh); err != nil {
@@ -146,14 +151,14 @@ func (s *Service) syncContracts(ctx context.Context, errCh chan<- error) {
 	}
 }
 
-func (s *Service) ensureRegistered(ctx context.Context, cfg ContractConfig, errCh chan<- error) error {
+func (s *Service) ensureRegistered(ctx context.Context, cfg ContractInfo, errCh chan<- error) error {
 	if cfg.ChainID == 0 {
 		return fmt.Errorf("chainID is required")
 	}
-	if cfg.Contract == (common.Address{}) {
+	if cfg.Address == (common.Address{}) {
 		return fmt.Errorf("contract is required")
 	}
-	key := contractKey(cfg.ChainID, cfg.Contract)
+	key := contractKey(cfg.ChainID, cfg.Address)
 
 	s.mu.Lock()
 	if _, exists := s.indexers[key]; exists {
@@ -174,7 +179,7 @@ func (s *Service) ensureRegistered(ctx context.Context, cfg ContractConfig, errC
 		Client:       client,
 		Store:        s.store,
 		ChainID:      cfg.ChainID,
-		Contract:     cfg.Contract,
+		Contract:     cfg.Address,
 		StartBlock:   cfg.StartBlock,
 		PollInterval: s.pollInterval,
 		BatchSize:    s.batchSize,

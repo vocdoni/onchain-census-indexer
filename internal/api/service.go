@@ -20,21 +20,12 @@ import (
 	"github.com/vocdoni/onchain-census-indexer/internal/store"
 )
 
-type contractSpec struct {
-	chainID uint64
-	address common.Address
-}
-
-func (c contractSpec) key() string {
-	return fmt.Sprintf("%d:%s", c.chainID, strings.ToLower(c.address.Hex()))
-}
-
 // Service exposes the GraphQL API for indexed contracts.
 type Service struct {
 	store     *store.Store
 	mu        sync.RWMutex
 	handlers  map[string]*handler.Handler
-	contracts []contractSpec
+	contracts []indexer.ContractInfo
 }
 
 // New creates a new API service.
@@ -60,8 +51,8 @@ func (s *Service) RegisterContract(chainID uint64, contract common.Address) erro
 	if err != nil {
 		return fmt.Errorf("create graphql schema: %w", err)
 	}
-	spec := contractSpec{chainID: chainID, address: contract}
-	key := spec.key()
+	contractConf := indexer.ContractInfo{ChainID: chainID, Address: contract}
+	key := contractConf.Key()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -73,7 +64,7 @@ func (s *Service) RegisterContract(chainID uint64, contract common.Address) erro
 		Pretty:   true,
 		GraphiQL: true,
 	})
-	s.contracts = append(s.contracts, spec)
+	s.contracts = append(s.contracts, contractConf)
 	return nil
 }
 
@@ -143,7 +134,7 @@ func (s *Service) routes() http.Handler {
 	return mux
 }
 
-type registerRequest = indexer.ContractConfig
+type registerRequest = indexer.ContractInfo
 
 type registerResponse struct {
 	ChainID  uint64 `json:"chainId"`
@@ -162,8 +153,8 @@ func (s *Service) handleContracts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json body", http.StatusBadRequest)
 		return
 	}
-	contractAddr := req.Contract
-	if err := s.store.SaveContract(r.Context(), req.ChainID, req.Contract, req.StartBlock); err != nil {
+	contractAddr := req.Address
+	if err := s.store.SaveContract(r.Context(), req.ChainID, req.Address, req.StartBlock); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -188,7 +179,7 @@ func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "Available GraphQL endpoints:")
 		for _, spec := range s.sortedContracts() {
-			fmt.Fprintf(w, "- /%d/%s/graphql\n", spec.chainID, spec.address.Hex())
+			fmt.Fprintf(w, "- /%d/%s/graphql\n", spec.ChainID, spec.Address.Hex())
 		}
 		return
 	}
@@ -219,17 +210,17 @@ func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {
 	graphqlHandler.ServeHTTP(w, r)
 }
 
-func (s *Service) sortedContracts() []contractSpec {
+func (s *Service) sortedContracts() []indexer.ContractInfo {
 	s.mu.RLock()
-	contracts := make([]contractSpec, len(s.contracts))
+	contracts := make([]indexer.ContractInfo, len(s.contracts))
 	copy(contracts, s.contracts)
 	s.mu.RUnlock()
 
 	sort.Slice(contracts, func(i, j int) bool {
-		if contracts[i].chainID == contracts[j].chainID {
-			return strings.ToLower(contracts[i].address.Hex()) < strings.ToLower(contracts[j].address.Hex())
+		if contracts[i].ChainID == contracts[j].ChainID {
+			return strings.ToLower(contracts[i].Address.Hex()) < strings.ToLower(contracts[j].Address.Hex())
 		}
-		return contracts[i].chainID < contracts[j].chainID
+		return contracts[i].ChainID < contracts[j].ChainID
 	})
 	return contracts
 }

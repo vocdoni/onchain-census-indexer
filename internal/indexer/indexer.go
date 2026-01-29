@@ -5,21 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/big"
 	"sort"
 	"time"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	contracts "github.com/vocdoni/davinci-contracts/golang-types"
 	"github.com/vocdoni/davinci-node/log"
 	"github.com/vocdoni/davinci-node/web3/rpc"
 
 	"github.com/vocdoni/onchain-census-indexer/internal/store"
 )
-
-const weightChangedEventName = "WeightChanged"
 
 var errRetryable = errors.New("retryable error")
 
@@ -40,8 +36,7 @@ type Indexer struct {
 	store        *store.Store
 	chainID      uint64
 	contract     common.Address
-	abi          abi.ABI
-	eventID      common.Hash
+	filterer     *contracts.ICensusValidatorFilterer
 	startBlock   uint64
 	pollInterval time.Duration
 	batchSize    uint64
@@ -58,13 +53,9 @@ func New(cfg Config) (*Indexer, error) {
 	if cfg.ChainID == 0 {
 		return nil, fmt.Errorf("chainID is required")
 	}
-	parsedABI, err := loadABI()
+	filterer, err := contracts.NewICensusValidatorFilterer(cfg.Contract, cfg.Client)
 	if err != nil {
-		return nil, fmt.Errorf("load ABI: %w", err)
-	}
-	event, ok := parsedABI.Events[weightChangedEventName]
-	if !ok {
-		return nil, fmt.Errorf("event %s not found in ABI", weightChangedEventName)
+		return nil, fmt.Errorf("create contract filterer: %w", err)
 	}
 	pollInterval := cfg.PollInterval
 	if pollInterval <= 0 {
@@ -79,8 +70,7 @@ func New(cfg Config) (*Indexer, error) {
 		store:        cfg.Store,
 		chainID:      cfg.ChainID,
 		contract:     cfg.Contract,
-		abi:          parsedABI,
-		eventID:      event.ID,
+		filterer:     filterer,
 		startBlock:   cfg.StartBlock,
 		pollInterval: pollInterval,
 		batchSize:    batchSize,
@@ -150,11 +140,7 @@ func (i *Indexer) syncOnce(ctx context.Context, lastBlock *uint64) error {
 			to = head
 		}
 		log.Debugw("fetching logs batch", "from", from, "to", to)
-		logs, err := i.fetchLogs(ctx, from, to)
-		if err != nil {
-			return err
-		}
-		events, err := i.parseLogs(logs)
+		events, err := i.fetchEvents(ctx, from, to)
 		if err != nil {
 			return err
 		}
@@ -171,53 +157,46 @@ func (i *Indexer) syncOnce(ctx context.Context, lastBlock *uint64) error {
 	return nil
 }
 
-func (i *Indexer) fetchLogs(ctx context.Context, from, to uint64) ([]gethtypes.Log, error) {
-	query := ethereum.FilterQuery{
-		FromBlock: big.NewInt(0).SetUint64(from),
-		ToBlock:   big.NewInt(0).SetUint64(to),
-		Addresses: []common.Address{i.contract},
-		Topics:    [][]common.Hash{{i.eventID}},
+func (i *Indexer) fetchEvents(ctx context.Context, from, to uint64) ([]store.Event, error) {
+	opts := &bind.FilterOpts{
+		Start:   from,
+		End:     &to,
+		Context: ctx,
 	}
-	logs, err := i.client.FilterLogs(ctx, query)
+	iter, err := i.filterer.FilterWeightChanged(opts, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: filter logs from %d to %d: %v", errRetryable, from, to, err)
 	}
-	log.Debugw("filter logs completed", "from", from, "to", to, "logs", len(logs))
-	sort.Slice(logs, func(a, b int) bool {
-		if logs[a].BlockNumber == logs[b].BlockNumber {
-			return logs[a].Index < logs[b].Index
-		}
-		return logs[a].BlockNumber < logs[b].BlockNumber
-	})
-	return logs, nil
-}
+	defer iter.Close()
 
-func (i *Indexer) parseLogs(logs []gethtypes.Log) ([]store.Event, error) {
-	results := make([]store.Event, 0, len(logs))
-	for _, logEntry := range logs {
-		if len(logEntry.Topics) < 2 {
-			return nil, fmt.Errorf("log missing indexed account topic")
+	results := make([]store.Event, 0)
+	for iter.Next() {
+		event := iter.Event
+		if event == nil {
+			continue
 		}
-		if logEntry.Index > math.MaxUint32 {
+		if event.Raw.Index > math.MaxUint32 {
 			return nil, fmt.Errorf("log index overflows uint32")
 		}
-		var decoded struct {
-			PreviousWeight *big.Int
-			NewWeight      *big.Int
-		}
-		if err := i.abi.UnpackIntoInterface(&decoded, weightChangedEventName, logEntry.Data); err != nil {
-			return nil, fmt.Errorf("unpack log data: %w", err)
-		}
-		account := common.HexToAddress(logEntry.Topics[1].Hex())
 		results = append(results, store.Event{
 			ChainID:        i.chainID,
 			Contract:       i.contract.Hex(),
-			Account:        account.Hex(),
-			PreviousWeight: decoded.PreviousWeight.String(),
-			NewWeight:      decoded.NewWeight.String(),
-			BlockNumber:    logEntry.BlockNumber,
-			LogIndex:       uint32(logEntry.Index),
+			Account:        event.Account.Hex(),
+			PreviousWeight: event.PreviousWeight.String(),
+			NewWeight:      event.NewWeight.String(),
+			BlockNumber:    event.Raw.BlockNumber,
+			LogIndex:       uint32(event.Raw.Index),
 		})
 	}
+	if err := iter.Error(); err != nil {
+		return nil, fmt.Errorf("%w: filter logs from %d to %d: %v", errRetryable, from, to, err)
+	}
+	sort.Slice(results, func(a, b int) bool {
+		if results[a].BlockNumber == results[b].BlockNumber {
+			return results[a].LogIndex < results[b].LogIndex
+		}
+		return results[a].BlockNumber < results[b].BlockNumber
+	})
+	log.Debugw("filter logs completed", "from", from, "to", to, "events", len(results))
 	return results, nil
 }
