@@ -92,7 +92,7 @@ func main() {
 		seeded++
 	}
 	if seeded == 0 {
-		log.Fatal("no contracts stored successfully; exiting")
+		log.Infow("no contracts provided on startup; waiting for /contracts registration")
 	}
 
 	if err := apiService.SyncFromStore(context.Background()); err != nil {

@@ -104,24 +104,12 @@ query GetWeightChangeEvents($first: Int!, $skip: Int!) {
 }
 ```
 
-## Contract ABI (embedded)
+## Contract bindings
 
-The ABI is embedded in `internal/indexer/abi.go`:
+This service uses generated Go bindings for the census validator contract:
 
-```
-[
-  {
-    "name": "WeightChanged",
-    "type": "event",
-    "inputs": [
-      {"name": "account", "type": "address", "indexed": true},
-      {"name": "previousWeight", "type": "uint88", "indexed": false},
-      {"name": "newWeight", "type": "uint88", "indexed": false}
-    ],
-    "anonymous": false
-  }
-]
-```
+- Source: `github.com/vocdoni/davinci-contracts/golang-types/ICensusValidator.go`
+- Event: `WeightChanged(address indexed account, uint88 previousWeight, uint88 newWeight)`
 
 ## Configuration
 
@@ -129,7 +117,7 @@ Flags override environment variables. Defaults shown where available.
 
 | Flag | Env | Default | Description |
 | --- | --- | --- | --- |
-| `--contracts` | `CONTRACTS` | required | Comma/space/semicolon‑separated `chainID:contractAddress:blockNumber` entries |
+| `--contracts` | `CONTRACTS` | optional | Comma/space/semicolon‑separated `chainID:contractAddress:blockNumber` entries |
 | `--rpc` (repeat) | `RPCS` / `RPC_ENDPOINTS` | optional | RPC endpoints (can cover multiple chain IDs). If omitted, endpoints are pulled from chainlist automatically |
 | `--db.path` | `DB_PATH` | `data` (local) / `/data` (docker) | DB path |
 | `--http.listen` | `LISTEN_ADDR` / `LISTEN` | `:8080` | HTTP listen address |

@@ -30,7 +30,7 @@ type ServiceConfig struct {
 // ContractInfo defines a contract indexing target.
 type ContractInfo struct {
 	ChainID    uint64         `json:"chainId"`
-	Address    common.Address `json:"contract"`
+	Address    common.Address `json:"address"`
 	StartBlock uint64         `json:"startBlock"`
 }
 
@@ -41,7 +41,7 @@ func (c ContractInfo) Key() string {
 
 type contractInfoJSON struct {
 	ChainID    uint64 `json:"chainId"`
-	Contract   string `json:"contract"`
+	Address    string `json:"address"`
 	StartBlock uint64 `json:"startBlock"`
 }
 
@@ -54,11 +54,11 @@ func (c *ContractInfo) UnmarshalJSON(data []byte) error {
 	if tmp.ChainID == 0 {
 		return fmt.Errorf("chainId is required")
 	}
-	if !common.IsHexAddress(tmp.Contract) {
+	if !common.IsHexAddress(tmp.Address) {
 		return fmt.Errorf("invalid contract address")
 	}
 	c.ChainID = tmp.ChainID
-	c.Address = common.HexToAddress(tmp.Contract)
+	c.Address = common.HexToAddress(tmp.Address)
 	c.StartBlock = tmp.StartBlock
 	return nil
 }

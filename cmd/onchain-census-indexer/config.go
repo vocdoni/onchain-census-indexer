@@ -15,13 +15,13 @@ import (
 )
 
 type Config struct {
-	ContractsRaw string                   `mapstructure:"contracts"`
+	ContractsRaw string                 `mapstructure:"contracts"`
 	Contracts    []indexer.ContractInfo `mapstructure:"-"`
-	RPCs         []string                 `mapstructure:"rpc"`
-	DB           DBConfig                 `mapstructure:"db"`
-	HTTP         HTTPConfig               `mapstructure:"http"`
-	Indexer      IndexerConfig            `mapstructure:"indexer"`
-	Log          LogConfig                `mapstructure:"log"`
+	RPCs         []string               `mapstructure:"rpc"`
+	DB           DBConfig               `mapstructure:"db"`
+	HTTP         HTTPConfig             `mapstructure:"http"`
+	Indexer      IndexerConfig          `mapstructure:"indexer"`
+	Log          LogConfig              `mapstructure:"log"`
 }
 
 type DBConfig struct {
@@ -76,15 +76,13 @@ func LoadConfig() (*Config, error) {
 	if cfg.ContractsRaw == "" {
 		cfg.ContractsRaw = strings.TrimSpace(config.GetString("contract"))
 	}
-	if cfg.ContractsRaw == "" {
-		return nil, fmt.Errorf("--contracts or CONTRACTS env var is required")
+	if cfg.ContractsRaw != "" {
+		contracts, err := parseContractSpecs(cfg.ContractsRaw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid contracts: %w", err)
+		}
+		cfg.Contracts = contracts
 	}
-
-	contracts, err := parseContractSpecs(cfg.ContractsRaw)
-	if err != nil {
-		return nil, fmt.Errorf("invalid contracts: %w", err)
-	}
-	cfg.Contracts = contracts
 
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = log.LogLevelDebug
@@ -133,7 +131,7 @@ func parseContractSpecs(value string) ([]indexer.ContractInfo, error) {
 		}
 		out = append(out, indexer.ContractInfo{
 			ChainID:    chainID,
-			Address:   common.HexToAddress(address),
+			Address:    common.HexToAddress(address),
 			StartBlock: startBlock,
 		})
 	}
