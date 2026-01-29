@@ -12,8 +12,8 @@ A Go service that indexes the `WeightChanged` event from multiple contracts (acr
 
 ## Architecture
 
-- **Indexer service**: manages one indexer per registered contract.
-- **API service**: exposes GraphQL endpoints per contract.
+- **Indexer service**: polls the database for contracts and runs one indexer per contract.
+- **API service**: exposes GraphQL endpoints per contract and a registration endpoint.
 - Both services only depend on the database; main wires config and services.
 
 Key dependencies:
@@ -46,6 +46,29 @@ Each entry defines:
 **Endpoint:** `http://localhost:8080/{chainID}/{contractAddress}/graphql`  
 **Health check:** `http://localhost:8080/healthz`  
 **Root listing:** `http://localhost:8080/`
+
+### Register new contracts (HTTP)
+
+```
+POST /contracts
+Content-Type: application/json
+
+{
+  "chainId": 11155111,
+  "contract": "0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29",
+  "startBlock": 10085464
+}
+```
+
+Response:
+
+```
+{
+  "chainId": 11155111,
+  "contract": "0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29",
+  "endpoint": "/11155111/0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29/graphql"
+}
+```
 
 ### Schema (reference)
 
@@ -107,7 +130,7 @@ Flags override environment variables. Defaults shown where available.
 | Flag | Env | Default | Description |
 | --- | --- | --- | --- |
 | `--contracts` | `CONTRACTS` | required | Comma/space/semicolon‑separated `chainID:contractAddress:blockNumber` entries |
-| `--rpc` (repeat) | `RPCS` / `RPC_ENDPOINTS` | required | RPC endpoints (can cover multiple chain IDs) |
+| `--rpc` (repeat) | `RPCS` / `RPC_ENDPOINTS` | optional | RPC endpoints (can cover multiple chain IDs). If omitted, endpoints are pulled from chainlist automatically |
 | `--db.path` | `DB_PATH` | `data` (local) / `/data` (docker) | DB path |
 | `--http.listen` | `LISTEN_ADDR` / `LISTEN` | `:8080` | HTTP listen address |
 | `--indexer.pollInterval` | `POLL_INTERVAL` | `5s` | Polling interval |
@@ -117,6 +140,8 @@ Flags override environment variables. Defaults shown where available.
 Notes:
 - `--contract` is deprecated in favor of `--contracts`.
 - For env values, use comma‑separated lists (avoid wrapping in quotes that become part of the value).
+- If `RPCS` is omitted, the service uses chainlist.org to auto-discover healthy RPCs for each chain ID.
+- New contracts registered via `POST /contracts` are persisted in the DB and picked up by the indexer on the next sync interval (uses `indexer.pollInterval`).
 
 ## Local usage
 

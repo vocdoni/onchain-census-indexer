@@ -86,10 +86,6 @@ func LoadConfig() (*Config, error) {
 	}
 	cfg.Contracts = contracts
 
-	if len(cfg.RPCs) == 0 {
-		return nil, fmt.Errorf("at least one --rpc or RPCS env var is required")
-	}
-
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = log.LogLevelDebug
 	}

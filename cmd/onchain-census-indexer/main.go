@@ -49,25 +49,31 @@ func main() {
 	}()
 	eventStore := store.New(database)
 
-	pool := rpc.NewWeb3Pool()
-	chainIDs := make(map[uint64]int)
-	for _, endpoint := range cfg.RPCs {
-		id, err := pool.AddEndpoint(endpoint)
+	autoRPC := len(cfg.RPCs) == 0
+	var pool *rpc.Web3Pool
+	if autoRPC {
+		var err error
+		pool, err = rpc.NewAutomaticWeb3Pool()
 		if err != nil {
-			log.Fatalf("add RPC endpoint %s: %v", endpoint, err)
+			log.Fatalf("create automatic rpc pool: %v", err)
 		}
-		chainIDs[id]++
-	}
-
-	for chainID := range chainIDs {
-		log.Infow("rpc endpoints ready", "chainID", chainID, "count", chainIDs[chainID])
+	} else {
+		pool = rpc.NewWeb3Pool()
+		for _, endpoint := range cfg.RPCs {
+			if _, err := pool.AddEndpoint(endpoint); err != nil {
+				log.Fatalf("add RPC endpoint %s: %v", endpoint, err)
+			}
+		}
 	}
 
 	indexerService, err := indexer.NewService(indexer.ServiceConfig{
-		Pool:         pool,
-		Store:        eventStore,
-		PollInterval: cfg.Indexer.PollInterval,
-		BatchSize:    cfg.Indexer.BatchSize,
+		Pool:                 pool,
+		Store:                eventStore,
+		PollInterval:         cfg.Indexer.PollInterval,
+		BatchSize:            cfg.Indexer.BatchSize,
+		ContractSyncInterval: cfg.Indexer.PollInterval,
+		AutoRPC:              autoRPC,
+		AutoRPCMaxEndpoints:  3,
 	})
 	if err != nil {
 		log.Fatalf("create indexer service: %v", err)
@@ -77,28 +83,20 @@ func main() {
 		log.Fatalf("create api service: %v", err)
 	}
 
-	registered := 0
+	seeded := 0
 	for _, spec := range cfg.Contracts {
-		if _, ok := chainIDs[spec.ChainID]; !ok {
-			log.Errorf("no RPC endpoints configured for chainID %d", spec.ChainID)
+		if err := eventStore.SaveContract(context.Background(), spec.ChainID, spec.Contract, spec.StartBlock); err != nil {
+			log.Errorf("store contract %s: %v", spec.Contract.Hex(), err)
 			continue
 		}
-		if err := indexerService.RegisterContract(indexer.ContractConfig{
-			ChainID:    spec.ChainID,
-			Contract:   spec.Contract,
-			StartBlock: spec.StartBlock,
-		}); err != nil {
-			log.Errorf("register indexer for chainID %d contract %s: %v", spec.ChainID, spec.Contract.Hex(), err)
-			continue
-		}
-		if err := apiService.RegisterContract(spec.ChainID, spec.Contract); err != nil {
-			log.Errorf("register api for chainID %d contract %s: %v", spec.ChainID, spec.Contract.Hex(), err)
-			continue
-		}
-		registered++
+		seeded++
 	}
-	if registered == 0 {
-		log.Fatal("no contracts registered successfully; exiting")
+	if seeded == 0 {
+		log.Fatal("no contracts stored successfully; exiting")
+	}
+
+	if err := apiService.SyncFromStore(context.Background()); err != nil {
+		log.Fatalf("sync api contracts: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

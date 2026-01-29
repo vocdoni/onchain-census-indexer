@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/graphql-go/handler"
 
 	"github.com/vocdoni/onchain-census-indexer/internal/graphqlapi"
+	"github.com/vocdoni/onchain-census-indexer/internal/indexer"
 	"github.com/vocdoni/onchain-census-indexer/internal/store"
 )
 
@@ -75,8 +77,28 @@ func (s *Service) RegisterContract(chainID uint64, contract common.Address) erro
 	return nil
 }
 
+// SyncFromStore registers GraphQL handlers for all contracts in the store.
+func (s *Service) SyncFromStore(ctx context.Context) error {
+	records, err := s.store.ListContracts(ctx)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if !common.IsHexAddress(record.Contract) {
+			continue
+		}
+		if err := s.RegisterContract(record.ChainID, common.HexToAddress(record.Contract)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Start runs the HTTP server until the context is canceled.
 func (s *Service) Start(ctx context.Context, addr string) error {
+	if err := s.SyncFromStore(ctx); err != nil {
+		return err
+	}
 	server := &http.Server{
 		Addr:    addr,
 		Handler: s.routes(),
@@ -116,8 +138,48 @@ func (s *Service) routes() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("/contracts", s.handleContracts)
 	mux.HandleFunc("/", s.handleRoot)
 	return mux
+}
+
+type registerRequest = indexer.ContractConfig
+
+type registerResponse struct {
+	ChainID  uint64 `json:"chainId"`
+	Contract string `json:"contract"`
+	Endpoint string `json:"endpoint"`
+}
+
+func (s *Service) handleContracts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req registerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json body", http.StatusBadRequest)
+		return
+	}
+	contractAddr := req.Contract
+	if err := s.store.SaveContract(r.Context(), req.ChainID, req.Contract, req.StartBlock); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.RegisterContract(req.ChainID, contractAddr); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := registerResponse{
+		ChainID:  req.ChainID,
+		Contract: contractAddr.Hex(),
+		Endpoint: fmt.Sprintf("/%d/%s/graphql", req.ChainID, contractAddr.Hex()),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {

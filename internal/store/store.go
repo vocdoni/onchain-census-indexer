@@ -14,6 +14,7 @@ import (
 const (
 	eventKeyPrefix       = "evt:"
 	lastBlockKeyPrefix   = "meta:last_block:"
+	contractKeyPrefix    = "meta:contract:"
 	contractAddressBytes = 20
 )
 
@@ -98,6 +99,76 @@ func (s *Store) SaveEvents(ctx context.Context, chainID uint64, contract common.
 		return fmt.Errorf("commit events: %w", err)
 	}
 	return nil
+}
+
+// SaveContract stores or updates a contract configuration.
+func (s *Store) SaveContract(ctx context.Context, chainID uint64, contract common.Address, startBlock uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if chainID == 0 {
+		return fmt.Errorf("chainID is required")
+	}
+	if contract == (common.Address{}) {
+		return fmt.Errorf("contract address is required")
+	}
+	key := contractKey(chainID, contract)
+	if _, err := s.db.Get(key); err == nil {
+		return nil
+	} else if !errors.Is(err, db.ErrKeyNotFound) {
+		return fmt.Errorf("check contract: %w", err)
+	}
+	record := ContractRecord{
+		ChainID:    chainID,
+		Contract:   contract.Hex(),
+		StartBlock: startBlock,
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal contract: %w", err)
+	}
+	tx := s.db.WriteTx()
+	defer tx.Discard()
+	if err := tx.Set(key, payload); err != nil {
+		if errors.Is(err, db.ErrConflict) {
+		}
+		return fmt.Errorf("store contract: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit contract: %w", err)
+	}
+	return nil
+}
+
+// ListContracts returns all stored contracts.
+func (s *Store) ListContracts(ctx context.Context) ([]ContractRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var (
+		results []ContractRecord
+		iterErr error
+	)
+	err := s.db.Iterate([]byte(contractKeyPrefix), func(_, value []byte) bool {
+		if err := ctx.Err(); err != nil {
+			iterErr = err
+			return false
+		}
+		var record ContractRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			iterErr = fmt.Errorf("decode contract: %w", err)
+			return false
+		}
+		results = append(results, record)
+		return true
+	})
+	if iterErr != nil {
+		return nil, iterErr
+	}
+	if err != nil {
+		return nil, fmt.Errorf("iterate contracts: %w", err)
+	}
+	return results, nil
 }
 
 // ListOptions defines pagination and ordering options when listing events.
@@ -262,6 +333,23 @@ func lastBlockKey(chainID uint64, contract common.Address) []byte {
 	key := make([]byte, len(lastBlockKeyPrefix)+8+contractAddressBytes)
 	copy(key, lastBlockKeyPrefix)
 	offset := len(lastBlockKeyPrefix)
+	binary.BigEndian.PutUint64(key[offset:], chainID)
+	offset += 8
+	copy(key[offset:], contract.Bytes())
+	return key
+}
+
+// ContractRecord represents a stored contract configuration.
+type ContractRecord struct {
+	ChainID    uint64 `json:"chainId"`
+	Contract   string `json:"contract"`
+	StartBlock uint64 `json:"startBlock"`
+}
+
+func contractKey(chainID uint64, contract common.Address) []byte {
+	key := make([]byte, len(contractKeyPrefix)+8+contractAddressBytes)
+	copy(key, contractKeyPrefix)
+	offset := len(contractKeyPrefix)
 	binary.BigEndian.PutUint64(key[offset:], chainID)
 	offset += 8
 	copy(key[offset:], contract.Bytes())
