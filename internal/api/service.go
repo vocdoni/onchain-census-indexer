@@ -86,13 +86,13 @@ func (s *Service) SyncFromStore(ctx context.Context) error {
 }
 
 // Start runs the HTTP server until the context is canceled.
-func (s *Service) Start(ctx context.Context, addr string) error {
+func (s *Service) Start(ctx context.Context, addr string, allowedOrigins []string) error {
 	if err := s.SyncFromStore(ctx); err != nil {
 		return err
 	}
 	server := &http.Server{
 		Addr:    addr,
-		Handler: s.routes(),
+		Handler: withCORS(s.routes(), allowedOrigins),
 	}
 
 	errCh := make(chan error, 1)
@@ -122,6 +122,99 @@ func (s *Service) Start(ctx context.Context, addr string) error {
 	default:
 	}
 	return nil
+}
+
+func withCORS(next http.Handler, allowedOrigins []string) http.Handler {
+	origins := normalizeAllowedOrigins(allowedOrigins)
+	allowAll := len(origins) == 1 && origins[0] == "*"
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		isPreflight := r.Method == http.MethodOptions && strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")) != ""
+		allowedOrigin := ""
+		if allowAll {
+			allowedOrigin = "*"
+		} else {
+			for _, allowed := range origins {
+				if strings.EqualFold(allowed, origin) {
+					allowedOrigin = origin
+					break
+				}
+			}
+		}
+
+		if allowedOrigin == "" {
+			if isPreflight {
+				http.Error(w, "origin not allowed", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		if !allowAll {
+			w.Header().Add("Vary", "Origin")
+		}
+
+		if isPreflight {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			requestHeaders := strings.TrimSpace(r.Header.Get("Access-Control-Request-Headers"))
+			if requestHeaders == "" {
+				requestHeaders = "Content-Type, Authorization"
+			}
+			w.Header().Set("Access-Control-Allow-Headers", requestHeaders)
+			w.Header().Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func normalizeAllowedOrigins(values []string) []string {
+	if len(values) == 0 {
+		return []string{"*"}
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		for _, entry := range splitList(value) {
+			if entry == "*" {
+				return []string{"*"}
+			}
+			key := strings.ToLower(entry)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, entry)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"*"}
+	}
+	return out
+}
+
+func splitList(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
 }
 
 func (s *Service) routes() http.Handler {

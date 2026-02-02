@@ -33,6 +33,7 @@ func main() {
 		"contracts", cfg.ContractsRaw,
 		"dbPath", cfg.DB.Path,
 		"listen", cfg.HTTP.ListenAddr,
+		"corsAllowedOrigins", strings.Join(cfg.HTTP.CORSAllowedOrigins, ","),
 		"pollInterval", cfg.Indexer.PollInterval.String(),
 		"batchSize", cfg.Indexer.BatchSize,
 		"rpcs", strings.Join(cfg.RPCs, ","),
@@ -106,7 +107,7 @@ func main() {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		serverErr <- apiService.Start(ctx, cfg.HTTP.ListenAddr)
+		serverErr <- apiService.Start(ctx, cfg.HTTP.ListenAddr, cfg.HTTP.CORSAllowedOrigins)
 	}()
 
 	log.Infow("http server started", "addr", cfg.HTTP.ListenAddr, "graphql", "/{chainID}/{contract}/graphql", "healthz", "/healthz")

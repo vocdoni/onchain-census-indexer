@@ -29,7 +29,8 @@ type DBConfig struct {
 }
 
 type HTTPConfig struct {
-	ListenAddr string `mapstructure:"listen"`
+	ListenAddr         string   `mapstructure:"listen"`
+	CORSAllowedOrigins []string `mapstructure:"corsAllowedOrigins"`
 }
 
 type IndexerConfig struct {
@@ -49,6 +50,7 @@ func LoadConfig() (*Config, error) {
 	pflag.StringSlice("rpc", nil, "RPC endpoint (repeatable)")
 	pflag.String("db.path", "data", "Database path")
 	pflag.String("http.listen", ":8080", "HTTP listen address")
+	pflag.StringSlice("http.corsAllowedOrigins", []string{"*"}, "Allowed CORS origins (repeatable or comma-separated)")
 	pflag.Duration("indexer.pollInterval", 5*time.Second, "Polling interval")
 	pflag.Uint64("indexer.batchSize", 2000, "Block batch size per filterLogs")
 	pflag.String("log.level", log.LogLevelDebug, "Log level (debug, info, warn, error)")
@@ -65,6 +67,7 @@ func LoadConfig() (*Config, error) {
 	_ = config.BindEnv("rpc", "RPCS", "RPC_ENDPOINTS")
 	_ = config.BindEnv("db.path", "DB_PATH")
 	_ = config.BindEnv("http.listen", "LISTEN_ADDR", "LISTEN")
+	_ = config.BindEnv("http.corsAllowedOrigins", "CORS_ALLOWED_ORIGINS")
 	_ = config.BindEnv("indexer.pollInterval", "POLL_INTERVAL")
 	_ = config.BindEnv("indexer.batchSize", "BATCH_SIZE")
 	_ = config.BindEnv("log.level", "LOG_LEVEL")
@@ -98,6 +101,10 @@ func LoadConfig() (*Config, error) {
 	}
 	if cfg.HTTP.ListenAddr == "" {
 		cfg.HTTP.ListenAddr = ":8080"
+	}
+	cfg.HTTP.CORSAllowedOrigins = normalizeCSVList(cfg.HTTP.CORSAllowedOrigins)
+	if len(cfg.HTTP.CORSAllowedOrigins) == 0 {
+		cfg.HTTP.CORSAllowedOrigins = []string{"*"}
 	}
 
 	return cfg, nil
@@ -136,4 +143,24 @@ func parseContractSpecs(value string) ([]indexer.ContractInfo, error) {
 		})
 	}
 	return out, nil
+}
+
+func normalizeCSVList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		parts := strings.FieldsFunc(value, func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == ';'
+		})
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			out = append(out, part)
+		}
+	}
+	return out
 }
