@@ -269,10 +269,20 @@ func (s *Service) handleContracts(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(r.URL.Path, "/")
 	if path == "" {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintln(w, "Available GraphQL endpoints:")
+		w.Header().Set("Content-Type", "application/json")
+		type APIInfo struct {
+			indexer.ContractInfo `json:"info"`
+			Endpoint             string `json:"endpoint"`
+		}
+		var apiInfo []APIInfo
 		for _, spec := range s.sortedContracts() {
-			fmt.Fprintf(w, "- /%d/%s/graphql\n", spec.ChainID, spec.Address.Hex())
+			apiInfo = append(apiInfo, APIInfo{
+				ContractInfo: spec,
+				Endpoint:     fmt.Sprintf("/%d/%s/graphql", spec.ChainID, spec.Address.Hex()),
+			})
+		}
+		if err := json.NewEncoder(w).Encode(apiInfo); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		return
 	}
