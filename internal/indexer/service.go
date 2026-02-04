@@ -32,6 +32,7 @@ type ContractInfo struct {
 	ChainID    uint64         `json:"chainId"`
 	Address    common.Address `json:"address"`
 	StartBlock uint64         `json:"startBlock"`
+	Synced     bool           `json:"synced"`
 }
 
 // Key returns a unique key for the contract config.
@@ -174,6 +175,25 @@ func (s *Service) ensureRegistered(ctx context.Context, cfg ContractInfo, errCh 
 	client, err := s.pool.Client(cfg.ChainID)
 	if err != nil {
 		return fmt.Errorf("create web3 client for chainID %d: %w", cfg.ChainID, err)
+	}
+	if cfg.StartBlock == 0 {
+		head, err := client.BlockNumber(ctx)
+		if err != nil {
+			return fmt.Errorf("fetch head block for chainID %d: %w", cfg.ChainID, err)
+		}
+		startBlock, err := creationBlockInRange(ctx, client, cfg.Address, 0, head)
+		if err != nil {
+			return fmt.Errorf("find creation block for chainID %d contract %s: %w", cfg.ChainID, cfg.Address.Hex(), err)
+		}
+		cfg.StartBlock = startBlock
+		if err := s.store.SetContractStartBlock(ctx, cfg.ChainID, cfg.Address, cfg.StartBlock); err != nil {
+			return fmt.Errorf("persist start block for chainID %d contract %s: %w", cfg.ChainID, cfg.Address.Hex(), err)
+		}
+		log.Infow("calculated and persisted contract start block",
+			"chainID", cfg.ChainID,
+			"contract", cfg.Address.Hex(),
+			"startBlock", cfg.StartBlock,
+		)
 	}
 	idx, err := New(Config{
 		Client:       client,

@@ -79,7 +79,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("create indexer service: %v", err)
 	}
-	apiService, err := api.New(eventStore)
+	apiService, err := api.New(eventStore, pool)
 	if err != nil {
 		log.Fatalf("create api service: %v", err)
 	}

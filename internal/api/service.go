@@ -15,6 +15,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/graphql-go/handler"
+	"github.com/vocdoni/davinci-node/web3/rpc"
 
 	"github.com/vocdoni/onchain-census-indexer/internal/graphqlapi"
 	"github.com/vocdoni/onchain-census-indexer/internal/indexer"
@@ -23,37 +24,61 @@ import (
 
 // Service exposes the GraphQL API for indexed contracts.
 type Service struct {
-	store     *store.Store
-	mu        sync.RWMutex
-	handlers  map[string]*handler.Handler
-	contracts []indexer.ContractInfo
+	store             *store.Store
+	chainHeadResolver chainHeadResolver
+	mu                sync.RWMutex
+	handlers          map[string]*handler.Handler
+	contracts         []indexer.ContractInfo
+}
+
+type chainHeadResolver interface {
+	HeadBlock(ctx context.Context, chainID uint64) (uint64, error)
+}
+
+type rpcChainHeadResolver struct {
+	pool *rpc.Web3Pool
+}
+
+func (r *rpcChainHeadResolver) HeadBlock(ctx context.Context, chainID uint64) (uint64, error) {
+	if r.pool == nil {
+		return 0, fmt.Errorf("rpc pool is required")
+	}
+	client, err := r.pool.Client(chainID)
+	if err != nil {
+		return 0, err
+	}
+	return client.BlockNumber(ctx)
 }
 
 // New creates a new API service.
-func New(eventStore *store.Store) (*Service, error) {
+func New(eventStore *store.Store, pool *rpc.Web3Pool) (*Service, error) {
 	if eventStore == nil {
 		return nil, fmt.Errorf("store is required")
 	}
+	var resolver chainHeadResolver
+	if pool != nil {
+		resolver = &rpcChainHeadResolver{pool: pool}
+	}
 	return &Service{
-		store:    eventStore,
-		handlers: make(map[string]*handler.Handler),
+		store:             eventStore,
+		chainHeadResolver: resolver,
+		handlers:          make(map[string]*handler.Handler),
 	}, nil
 }
 
 // RegisterContract registers a contract endpoint.
-func (s *Service) RegisterContract(chainID uint64, contract common.Address) error {
-	if chainID == 0 {
+func (s *Service) RegisterContract(info indexer.ContractInfo) error {
+	if info.ChainID == 0 {
 		return fmt.Errorf("chainID is required")
 	}
-	if contract == (common.Address{}) {
+	if info.Address == (common.Address{}) {
 		return fmt.Errorf("contract is required")
 	}
-	schema, err := graphqlapi.NewSchema(s.store, chainID, contract)
+	schema, err := graphqlapi.NewSchema(s.store, info.ChainID, info.Address)
 	if err != nil {
 		return fmt.Errorf("create graphql schema: %w", err)
 	}
-	contractConf := indexer.ContractInfo{ChainID: chainID, Address: contract}
-	key := contractConf.Key()
+	key := info.Key()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,7 +90,7 @@ func (s *Service) RegisterContract(chainID uint64, contract common.Address) erro
 		Pretty:   true,
 		GraphiQL: true,
 	})
-	s.contracts = append(s.contracts, contractConf)
+	s.contracts = append(s.contracts, info)
 	return nil
 }
 
@@ -79,7 +104,11 @@ func (s *Service) SyncFromStore(ctx context.Context) error {
 		if !common.IsHexAddress(record.Contract) {
 			continue
 		}
-		if err := s.RegisterContract(record.ChainID, common.HexToAddress(record.Contract)); err != nil {
+		if err := s.RegisterContract(indexer.ContractInfo{
+			ChainID:    record.ChainID,
+			Address:    common.HexToAddress(record.Contract),
+			StartBlock: record.StartBlock,
+		}); err != nil {
 			return err
 		}
 	}
@@ -252,7 +281,11 @@ func (s *Service) handleContracts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.RegisterContract(req.ChainID, contractAddr); err != nil {
+	if err := s.RegisterContract(indexer.ContractInfo{
+		ChainID:    req.ChainID,
+		Address:    contractAddr,
+		StartBlock: req.StartBlock,
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -276,7 +309,7 @@ func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {
 			Endpoint             string `json:"endpoint"`
 		}
 		var apiInfo []APIInfo
-		for _, spec := range s.sortedContracts() {
+		for _, spec := range s.contractsWithSyncStatus(r.Context()) {
 			apiInfo = append(apiInfo, APIInfo{
 				ContractInfo: spec,
 				Endpoint:     fmt.Sprintf("/%d/%s/graphql", spec.ChainID, spec.Address.Hex()),
@@ -326,5 +359,60 @@ func (s *Service) sortedContracts() []indexer.ContractInfo {
 		}
 		return contracts[i].ChainID < contracts[j].ChainID
 	})
+	return contracts
+}
+
+func (s *Service) contractsWithSyncStatus(ctx context.Context) []indexer.ContractInfo {
+	contracts := s.sortedContracts()
+	if len(contracts) == 0 {
+		return contracts
+	}
+	records, err := s.store.ListContracts(ctx)
+	if err == nil {
+		startBlocks := make(map[string]uint64, len(records))
+		for _, record := range records {
+			if !common.IsHexAddress(record.Contract) {
+				continue
+			}
+			info := indexer.ContractInfo{
+				ChainID: record.ChainID,
+				Address: common.HexToAddress(record.Contract),
+			}
+			startBlocks[info.Key()] = record.StartBlock
+		}
+		for i := range contracts {
+			if startBlock, ok := startBlocks[contracts[i].Key()]; ok {
+				contracts[i].StartBlock = startBlock
+			}
+		}
+	}
+	type chainHead struct {
+		head   uint64
+		err    error
+		loaded bool
+	}
+	heads := make(map[uint64]chainHead, len(contracts))
+	for i := range contracts {
+		lastBlock, ok, err := s.store.LastIndexedBlock(ctx, contracts[i].ChainID, contracts[i].Address)
+		if err != nil || !ok {
+			contracts[i].Synced = false
+			continue
+		}
+
+		head := heads[contracts[i].ChainID]
+		if !head.loaded {
+			head.loaded = true
+			if s.chainHeadResolver == nil {
+				head.err = fmt.Errorf("chain head resolver unavailable")
+			} else {
+				queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				head.head, head.err = s.chainHeadResolver.HeadBlock(queryCtx, contracts[i].ChainID)
+				cancel()
+			}
+			heads[contracts[i].ChainID] = head
+		}
+
+		contracts[i].Synced = head.err == nil && lastBlock >= head.head
+	}
 	return contracts
 }

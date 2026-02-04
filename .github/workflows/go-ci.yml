@@ -67,3 +67,12 @@ jobs:
 
       - name: Run full test suite with race detector
         run: go test -race -count=1 ./...
+
+  docker-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: lint-and-test
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-release.yml
+    secrets: inherit

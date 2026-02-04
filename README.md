@@ -8,7 +8,7 @@ A Go service that indexes the `WeightChanged` event from multiple contracts (acr
 - Supports multiple chains in the same process.
 - Persists events locally with resume support per contract.
 - Serves GraphQL per contract at `/{chainID}/{contractAddress}/graphql`.
-- Root `/` shows a plain‑text list of available GraphQL endpoints.
+- Root `/` shows a JSON list of available GraphQL endpoints and sync status per contract.
 
 ## Architecture
 
@@ -45,7 +45,31 @@ Each entry defines:
 
 **Endpoint:** `http://localhost:8080/{chainID}/{contractAddress}/graphql`  
 **Health check:** `http://localhost:8080/healthz`  
-**Root listing:** `http://localhost:8080/`
+**Root listing:** `http://localhost:8080/` (includes `info.synced`)
+
+### Root endpoint example
+
+Request:
+
+```
+GET /
+```
+
+Example response:
+
+```
+[
+  {
+    "info": {
+      "chainId": 11155111,
+      "address": "0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29",
+      "startBlock": 10085464,
+      "synced": true
+    },
+    "endpoint": "/11155111/0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29/graphql"
+  }
+]
+```
 
 ### Register new contracts (HTTP)
 
@@ -132,6 +156,7 @@ Notes:
 - For env values, use comma‑separated lists (avoid wrapping in quotes that become part of the value).
 - If `RPCS` is omitted, the service uses chainlist.org to auto-discover healthy RPCs for each chain ID.
 - New contracts registered via `POST /contracts` are persisted in the DB and picked up by the indexer on the next sync interval (uses `indexer.pollInterval`).
+- If a contract is saved with `startBlock: 0` (or omitted in `POST /contracts`), the indexer calculates the contract creation block on first registration and persists it in the DB.
 
 ## Local usage
 

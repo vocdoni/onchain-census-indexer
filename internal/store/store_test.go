@@ -86,3 +86,49 @@ func TestStoreListEvents(t *testing.T) {
 		})
 	}
 }
+
+func TestSetContractStartBlock(t *testing.T) {
+	ctx := context.Background()
+	database, err := metadb.New(db.TypeInMem, "")
+	if err != nil {
+		t.Fatalf("create in-memory db: %v", err)
+	}
+	defer func() {
+		if cerr := database.Close(); cerr != nil {
+			t.Fatalf("close db: %v", cerr)
+		}
+	}()
+	eventStore := New(database)
+
+	contractZero := common.HexToAddress("0x3333333333333333333333333333333333333333")
+	contractFixed := common.HexToAddress("0x4444444444444444444444444444444444444444")
+	if err := eventStore.SaveContract(ctx, 10, contractZero, 0); err != nil {
+		t.Fatalf("save contract with zero start block: %v", err)
+	}
+	if err := eventStore.SaveContract(ctx, 11, contractFixed, 42); err != nil {
+		t.Fatalf("save contract with fixed start block: %v", err)
+	}
+
+	if err := eventStore.SetContractStartBlock(ctx, 10, contractZero, 12345); err != nil {
+		t.Fatalf("set start block: %v", err)
+	}
+	if err := eventStore.SetContractStartBlock(ctx, 11, contractFixed, 99999); err != nil {
+		t.Fatalf("set start block for fixed contract: %v", err)
+	}
+
+	records, err := eventStore.ListContracts(ctx)
+	if err != nil {
+		t.Fatalf("list contracts: %v", err)
+	}
+
+	byChain := make(map[uint64]ContractRecord, len(records))
+	for _, record := range records {
+		byChain[record.ChainID] = record
+	}
+	if got := byChain[10].StartBlock; got != 12345 {
+		t.Fatalf("expected updated start block 12345 for chain 10, got %d", got)
+	}
+	if got := byChain[11].StartBlock; got != 42 {
+		t.Fatalf("expected unchanged start block 42 for chain 11, got %d", got)
+	}
+}

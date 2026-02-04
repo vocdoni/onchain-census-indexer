@@ -101,7 +101,7 @@ func (s *Store) SaveEvents(ctx context.Context, chainID uint64, contract common.
 	return nil
 }
 
-// SaveContract stores or updates a contract configuration.
+// SaveContract stores a contract configuration if it does not exist yet.
 func (s *Store) SaveContract(ctx context.Context, chainID uint64, contract common.Address, startBlock uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -133,6 +133,49 @@ func (s *Store) SaveContract(ctx context.Context, chainID uint64, contract commo
 		if errors.Is(err, db.ErrConflict) {
 			return nil
 		}
+		return fmt.Errorf("store contract: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit contract: %w", err)
+	}
+	return nil
+}
+
+// SetContractStartBlock updates the start block for an existing contract only
+// when the current stored value is zero.
+func (s *Store) SetContractStartBlock(ctx context.Context, chainID uint64, contract common.Address, startBlock uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if chainID == 0 {
+		return fmt.Errorf("chainID is required")
+	}
+	if contract == (common.Address{}) {
+		return fmt.Errorf("contract address is required")
+	}
+	key := contractKey(chainID, contract)
+	payload, err := s.db.Get(key)
+	if err != nil {
+		if errors.Is(err, db.ErrKeyNotFound) {
+			return fmt.Errorf("contract not found")
+		}
+		return fmt.Errorf("get contract: %w", err)
+	}
+	var record ContractRecord
+	if err := json.Unmarshal(payload, &record); err != nil {
+		return fmt.Errorf("decode contract: %w", err)
+	}
+	if record.StartBlock != 0 {
+		return nil
+	}
+	record.StartBlock = startBlock
+	updated, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal contract: %w", err)
+	}
+	tx := s.db.WriteTx()
+	defer tx.Discard()
+	if err := tx.Set(key, updated); err != nil {
 		return fmt.Errorf("store contract: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
