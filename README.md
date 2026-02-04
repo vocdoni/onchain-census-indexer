@@ -121,6 +121,7 @@ Flags override environment variables. Defaults shown where available.
 | `--rpc` (repeat) | `RPCS` / `RPC_ENDPOINTS` | optional | RPC endpoints (can cover multiple chain IDs). If omitted, endpoints are pulled from chainlist automatically |
 | `--db.path` | `DB_PATH` | `data` (local) / `/data` (docker) | DB path |
 | `--http.listen` | `LISTEN_ADDR` / `LISTEN` | `:8080` | HTTP listen address |
+| `--http.corsAllowedOrigins` | `CORS_ALLOWED_ORIGINS` | `*` | Allowed CORS origins (comma/space/semicolon separated) |
 | `--indexer.pollInterval` | `POLL_INTERVAL` | `5s` | Polling interval |
 | `--indexer.batchSize` | `BATCH_SIZE` | `2000` | Log batch size |
 | `--log.level` | `LOG_LEVEL` | `debug` | Log level |
