@@ -107,10 +107,14 @@ func main() {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		serverErr <- apiService.Start(ctx, cfg.HTTP.ListenAddr, cfg.HTTP.CORSAllowedOrigins)
+		serverErr <- apiService.Start(ctx, cfg.HTTP.ListenAddr, cfg.HTTP.ListenPort, cfg.HTTP.CORSAllowedOrigins)
 	}()
 
-	log.Infow("http server started", "addr", cfg.HTTP.ListenAddr, "graphql", "/{chainID}/{contract}/graphql", "healthz", "/healthz")
+	log.Infow("http server started",
+		"addr", cfg.HTTP.ListenAddr,
+		"port", cfg.HTTP.ListenPort,
+		"graphql", "/{chainID}/{contract}/graphql",
+		"healthz", "/healthz")
 
 	select {
 	case <-ctx.Done():

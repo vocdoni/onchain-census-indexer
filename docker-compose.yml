@@ -1,0 +1,64 @@
+services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-root@vocdoni.io}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --log.level=INFO
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "./letsencrypt:/letsencrypt"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - proxy
+    restart: ${RESTART:-unless-stopped}
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+  onchain-census-indexer:
+    image: ghcr.io/vocdoni/onchain-census-indexer:${TAG:-latest}
+    container_name: onchain-census-indexer
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+    networks:
+      - proxy
+    restart: ${RESTART:-unless-stopped}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.onchain-census-indexer.rule=Host(`${DOMAIN:-indexer.example.com}`)
+      - traefik.http.routers.onchain-census-indexer.entrypoints=websecure
+      - traefik.http.routers.onchain-census-indexer.tls=true
+      - traefik.http.routers.onchain-census-indexer.tls.certresolver=letsencrypt
+      - traefik.http.services.onchain-census-indexer.loadbalancer.server.port=${LISTEN_PORT:-8080}
+      - com.centurylinklabs.watchtower.enable=true
+
+  watchtower:
+    image: nickfedor/watchtower:latest
+    container_name: watchtower
+    command:
+      - --cleanup
+      - --label-enable
+      - --interval
+      - "${WATCHTOWER_INTERVAL:-300}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: ${RESTART:-unless-stopped}
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+networks:
+  proxy:
+    name: proxy

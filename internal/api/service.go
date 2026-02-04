@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -86,12 +87,12 @@ func (s *Service) SyncFromStore(ctx context.Context) error {
 }
 
 // Start runs the HTTP server until the context is canceled.
-func (s *Service) Start(ctx context.Context, addr string, allowedOrigins []string) error {
+func (s *Service) Start(ctx context.Context, addr string, port int, allowedOrigins []string) error {
 	if err := s.SyncFromStore(ctx); err != nil {
 		return err
 	}
 	server := &http.Server{
-		Addr:    addr,
+		Addr:    net.JoinHostPort(addr, fmt.Sprint(port)),
 		Handler: withCORS(s.routes(), allowedOrigins),
 	}
 

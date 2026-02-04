@@ -1,0 +1,69 @@
+name: Go CI
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Go checks (linter, vet, format) and tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run go mod tidy
+        run: |
+          go mod tidy
+          if [[ $(git status --porcelain) ]]; then
+            git diff
+            echo
+            echo "go mod tidy made these changes, please run 'go mod tidy' and include those changes in a commit"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Verify module dependencies
+        run: go mod verify
+
+      - name: Run go generate
+        run: |
+          go generate ./...
+          if [[ $(git status --porcelain) ]]; then
+            git diff
+            echo
+            echo "go generate made these changes, please run 'go generate ./...' and include those changes in a commit"
+            exit 1
+          fi
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5
+          args: --timeout=10m
+
+      - name: Install gofumpt
+        run: go install mvdan.cc/gofumpt@latest
+
+      - name: Check formatting with gofumpt
+        shell: bash
+        run: |
+          files="$("$(go env GOPATH)/bin/gofumpt" -l .)"
+          if [[ -n "${files}" ]]; then
+            echo "These files are not gofumpt-formatted:"
+            echo "${files}"
+            exit 1
+          fi
+
+      - name: Run full test suite with race detector
+        run: go test -race -count=1 ./...

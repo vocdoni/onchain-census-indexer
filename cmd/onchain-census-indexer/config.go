@@ -29,7 +29,8 @@ type DBConfig struct {
 }
 
 type HTTPConfig struct {
-	ListenAddr         string   `mapstructure:"listen"`
+	ListenAddr         string   `mapstructure:"address"`
+	ListenPort         int      `mapstructure:"port"`
 	CORSAllowedOrigins []string `mapstructure:"corsAllowedOrigins"`
 }
 
@@ -49,7 +50,8 @@ func LoadConfig() (*Config, error) {
 	pflag.String("contract", "", "Deprecated: single contract in format chainID:contractAddress:blockNumber")
 	pflag.StringSlice("rpc", nil, "RPC endpoint (repeatable)")
 	pflag.String("db.path", "data", "Database path")
-	pflag.String("http.listen", ":8080", "HTTP listen address")
+	pflag.String("http.address", "0.0.0.0", "HTTP listen address")
+	pflag.Int("http.port", 8080, "HTTP listen port")
 	pflag.StringSlice("http.corsAllowedOrigins", []string{"*"}, "Allowed CORS origins (repeatable or comma-separated)")
 	pflag.Duration("indexer.pollInterval", 5*time.Second, "Polling interval")
 	pflag.Uint64("indexer.batchSize", 2000, "Block batch size per filterLogs")
@@ -66,7 +68,8 @@ func LoadConfig() (*Config, error) {
 	_ = config.BindEnv("contract", "CONTRACT", "CONTRACT_ADDRESS")
 	_ = config.BindEnv("rpc", "RPCS", "RPC_ENDPOINTS")
 	_ = config.BindEnv("db.path", "DB_PATH")
-	_ = config.BindEnv("http.listen", "LISTEN_ADDR", "LISTEN")
+	_ = config.BindEnv("http.address", "LISTEN_ADDR", "ADDRESS")
+	_ = config.BindEnv("http.port", "LISTEN_PORT", "PORT")
 	_ = config.BindEnv("http.corsAllowedOrigins", "CORS_ALLOWED_ORIGINS")
 	_ = config.BindEnv("indexer.pollInterval", "POLL_INTERVAL")
 	_ = config.BindEnv("indexer.batchSize", "BATCH_SIZE")
@@ -100,7 +103,10 @@ func LoadConfig() (*Config, error) {
 		cfg.DB.Path = "data"
 	}
 	if cfg.HTTP.ListenAddr == "" {
-		cfg.HTTP.ListenAddr = ":8080"
+		cfg.HTTP.ListenAddr = "0.0.0.0"
+	}
+	if cfg.HTTP.ListenPort == 0 {
+		cfg.HTTP.ListenPort = 8080
 	}
 	cfg.HTTP.CORSAllowedOrigins = normalizeCSVList(cfg.HTTP.CORSAllowedOrigins)
 	if len(cfg.HTTP.CORSAllowedOrigins) == 0 {
