@@ -167,7 +167,11 @@ func (i *Indexer) fetchEvents(ctx context.Context, from, to uint64) ([]store.Eve
 	if err != nil {
 		return nil, fmt.Errorf("%w: filter logs from %d to %d: %v", errRetryable, from, to, err)
 	}
-	defer iter.Close()
+	defer func() {
+		if err := iter.Close(); err != nil {
+			log.Warnw("close logs iterator error", "err", err)
+		}
+	}()
 
 	results := make([]store.Event, 0)
 	for iter.Next() {

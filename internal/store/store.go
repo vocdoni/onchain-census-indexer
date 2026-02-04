@@ -131,6 +131,7 @@ func (s *Store) SaveContract(ctx context.Context, chainID uint64, contract commo
 	defer tx.Discard()
 	if err := tx.Set(key, payload); err != nil {
 		if errors.Is(err, db.ErrConflict) {
+			return nil
 		}
 		return fmt.Errorf("store contract: %w", err)
 	}
