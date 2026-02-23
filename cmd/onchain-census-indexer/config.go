@@ -46,8 +46,8 @@ type LogConfig struct {
 func LoadConfig() (*Config, error) {
 	cfg := &Config{}
 
-	pflag.String("contracts", "", "Contracts in format chainID:contractAddress:blockNumber,chainID:contractAddress:blockNumber")
-	pflag.String("contract", "", "Deprecated: single contract in format chainID:contractAddress:blockNumber")
+	pflag.String("contracts", "", "Contracts in format chainID:contractAddress:blockNumber:expiresAt,chainID:contractAddress:blockNumber:expiresAt")
+	pflag.String("contract", "", "Deprecated: single contract in format chainID:contractAddress:blockNumber:expiresAt")
 	pflag.StringSlice("rpc", nil, "RPC endpoint (repeatable)")
 	pflag.String("db.path", "data", "Database path")
 	pflag.String("http.address", "0.0.0.0", "HTTP listen address")
@@ -126,9 +126,9 @@ func parseContractSpecs(value string) ([]indexer.ContractInfo, error) {
 	out := make([]indexer.ContractInfo, 0, len(entries))
 	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)
-		parts := strings.Split(entry, ":")
-		if len(parts) != 3 {
-			return nil, fmt.Errorf("invalid contract entry %q (expected chainID:contractAddress:blockNumber)", entry)
+		parts := strings.SplitN(entry, ":", 4)
+		if len(parts) != 4 {
+			return nil, fmt.Errorf("invalid contract entry %q (expected chainID:contractAddress:blockNumber:expiresAt)", entry)
 		}
 		chainID, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 64)
 		if err != nil || chainID == 0 {
@@ -142,10 +142,15 @@ func parseContractSpecs(value string) ([]indexer.ContractInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid start block in %q", entry)
 		}
+		expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(parts[3]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid expiresAt in %q (must be RFC3339)", entry)
+		}
 		out = append(out, indexer.ContractInfo{
 			ChainID:    chainID,
 			Address:    common.HexToAddress(address),
 			StartBlock: startBlock,
+			ExpiresAt:  expiresAt.UTC(),
 		})
 	}
 	return out, nil

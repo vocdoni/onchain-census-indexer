@@ -74,12 +74,37 @@ func (s *Service) RegisterContract(info indexer.ContractInfo) error {
 	if info.Address == (common.Address{}) {
 		return fmt.Errorf("contract is required")
 	}
+	if info.IsExpiredAt(time.Now().UTC()) {
+		return fmt.Errorf("contract has expired")
+	}
+	if err := s.registerHandler(info); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.contracts {
+		if s.contracts[i].Key() == info.Key() {
+			s.contracts[i] = info
+			return nil
+		}
+	}
+	s.contracts = append(s.contracts, info)
+	return nil
+}
+
+func (s *Service) registerHandler(info indexer.ContractInfo) error {
+	key := info.Key()
+	s.mu.RLock()
+	_, exists := s.handlers[key]
+	s.mu.RUnlock()
+	if exists {
+		return nil
+	}
+
 	schema, err := graphqlapi.NewSchema(s.store, info.ChainID, info.Address)
 	if err != nil {
 		return fmt.Errorf("create graphql schema: %w", err)
 	}
-	key := info.Key()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.handlers[key]; exists {
@@ -90,28 +115,53 @@ func (s *Service) RegisterContract(info indexer.ContractInfo) error {
 		Pretty:   true,
 		GraphiQL: true,
 	})
-	s.contracts = append(s.contracts, info)
 	return nil
 }
 
-// SyncFromStore registers GraphQL handlers for all contracts in the store.
+// SyncFromStore reconciles GraphQL handlers with current non-expired contracts in the store.
 func (s *Service) SyncFromStore(ctx context.Context) error {
 	records, err := s.store.ListContracts(ctx)
 	if err != nil {
 		return err
 	}
+	now := time.Now().UTC()
+	desired := make(map[string]indexer.ContractInfo, len(records))
 	for _, record := range records {
 		if !common.IsHexAddress(record.Contract) {
 			continue
 		}
-		if err := s.RegisterContract(indexer.ContractInfo{
+		info := indexer.ContractInfo{
 			ChainID:    record.ChainID,
 			Address:    common.HexToAddress(record.Contract),
 			StartBlock: record.StartBlock,
-		}); err != nil {
+			ExpiresAt:  record.ExpiresAt,
+		}
+		if info.IsExpiredAt(now) {
+			continue
+		}
+		desired[info.Key()] = info
+	}
+
+	for _, info := range desired {
+		if err := s.registerHandler(info); err != nil {
 			return err
 		}
 	}
+
+	s.mu.Lock()
+	for key := range s.handlers {
+		if _, ok := desired[key]; ok {
+			continue
+		}
+		delete(s.handlers, key)
+	}
+	contracts := make([]indexer.ContractInfo, 0, len(desired))
+	for _, info := range desired {
+		contracts = append(contracts, info)
+	}
+	s.contracts = contracts
+	s.mu.Unlock()
+
 	return nil
 }
 
@@ -260,9 +310,10 @@ func (s *Service) routes() http.Handler {
 type registerRequest = indexer.ContractInfo
 
 type registerResponse struct {
-	ChainID  uint64 `json:"chainId"`
-	Contract string `json:"contract"`
-	Endpoint string `json:"endpoint"`
+	ChainID   uint64    `json:"chainId"`
+	Contract  string    `json:"contract"`
+	Endpoint  string    `json:"endpoint"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 
 func (s *Service) handleContracts(w http.ResponseWriter, r *http.Request) {
@@ -276,24 +327,25 @@ func (s *Service) handleContracts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json body", http.StatusBadRequest)
 		return
 	}
+	if req.IsExpiredAt(time.Now().UTC()) {
+		http.Error(w, "expiresAt must be in the future", http.StatusBadRequest)
+		return
+	}
 	contractAddr := req.Address
-	if err := s.store.SaveContract(r.Context(), req.ChainID, req.Address, req.StartBlock); err != nil {
+	if err := s.store.SaveContract(r.Context(), req.ChainID, req.Address, req.StartBlock, req.ExpiresAt); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.RegisterContract(indexer.ContractInfo{
-		ChainID:    req.ChainID,
-		Address:    contractAddr,
-		StartBlock: req.StartBlock,
-	}); err != nil {
+	if err := s.SyncFromStore(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	resp := registerResponse{
-		ChainID:  req.ChainID,
-		Contract: contractAddr.Hex(),
-		Endpoint: fmt.Sprintf("/%d/%s/graphql", req.ChainID, contractAddr.Hex()),
+		ChainID:   req.ChainID,
+		Contract:  contractAddr.Hex(),
+		Endpoint:  fmt.Sprintf("/%d/%s/graphql", req.ChainID, contractAddr.Hex()),
+		ExpiresAt: req.ExpiresAt,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -301,6 +353,10 @@ func (s *Service) handleContracts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if err := s.SyncFromStore(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	path := strings.Trim(r.URL.Path, "/")
 	if path == "" {
 		w.Header().Set("Content-Type", "application/json")
@@ -369,22 +425,32 @@ func (s *Service) contractsWithSyncStatus(ctx context.Context) []indexer.Contrac
 	}
 	records, err := s.store.ListContracts(ctx)
 	if err == nil {
-		startBlocks := make(map[string]uint64, len(records))
+		now := time.Now().UTC()
+		metadata := make(map[string]indexer.ContractInfo, len(records))
 		for _, record := range records {
 			if !common.IsHexAddress(record.Contract) {
 				continue
 			}
 			info := indexer.ContractInfo{
-				ChainID: record.ChainID,
-				Address: common.HexToAddress(record.Contract),
+				ChainID:    record.ChainID,
+				Address:    common.HexToAddress(record.Contract),
+				StartBlock: record.StartBlock,
+				ExpiresAt:  record.ExpiresAt,
 			}
-			startBlocks[info.Key()] = record.StartBlock
+			if info.IsExpiredAt(now) {
+				continue
+			}
+			metadata[info.Key()] = info
 		}
+		filtered := contracts[:0]
 		for i := range contracts {
-			if startBlock, ok := startBlocks[contracts[i].Key()]; ok {
-				contracts[i].StartBlock = startBlock
+			if info, ok := metadata[contracts[i].Key()]; ok {
+				contracts[i].StartBlock = info.StartBlock
+				contracts[i].ExpiresAt = info.ExpiresAt
+				filtered = append(filtered, contracts[i])
 			}
 		}
+		contracts = filtered
 	}
 	type chainHead struct {
 		head   uint64

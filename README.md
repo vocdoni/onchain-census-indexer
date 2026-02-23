@@ -27,19 +27,20 @@ Key dependencies:
 Contracts are provided as a single string with entries separated by commas/spaces/semicolons:
 
 ```
-chainID:contractAddress:blockNumber
+chainID:contractAddress:blockNumber:expiresAt
 ```
 
 Example:
 
 ```
-42220:0xYourContract:123456,1:0xAnotherContract:987654
+42220:0xYourContract:123456:2026-03-01T12:00:00Z,1:0xAnotherContract:987654:2026-03-15T00:00:00Z
 ```
 
 Each entry defines:
 - **chainID**: the EVM chain ID
 - **contractAddress**: 0x address
 - **blockNumber**: start block (inclusive)
+- **expiresAt**: RFC3339 timestamp when contract data must be purged
 
 ## GraphQL
 
@@ -64,6 +65,7 @@ Example response:
       "chainId": 11155111,
       "address": "0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29",
       "startBlock": 10085464,
+      "expiresAt": "2026-03-01T12:00:00Z",
       "synced": true
     },
     "endpoint": "/11155111/0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29/graphql"
@@ -79,8 +81,9 @@ Content-Type: application/json
 
 {
   "chainId": 11155111,
-  "contract": "0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29",
-  "startBlock": 10085464
+  "address": "0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29",
+  "startBlock": 10085464,
+  "expiresAt": "2026-03-01T12:00:00Z"
 }
 ```
 
@@ -90,7 +93,8 @@ Response:
 {
   "chainId": 11155111,
   "contract": "0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29",
-  "endpoint": "/11155111/0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29/graphql"
+  "endpoint": "/11155111/0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29/graphql",
+  "expiresAt": "2026-03-01T12:00:00Z"
 }
 ```
 
@@ -141,7 +145,7 @@ Flags override environment variables. Defaults shown where available.
 
 | Flag | Env | Default | Description |
 | --- | --- | --- | --- |
-| `--contracts` | `CONTRACTS` | optional | Comma/space/semicolon‑separated `chainID:contractAddress:blockNumber` entries |
+| `--contracts` | `CONTRACTS` | optional | Comma/space/semicolon‑separated `chainID:contractAddress:blockNumber:expiresAt` entries |
 | `--rpc` (repeat) | `RPCS` / `RPC_ENDPOINTS` | optional | RPC endpoints (can cover multiple chain IDs). If omitted, endpoints are pulled from chainlist automatically |
 | `--db.path` | `DB_PATH` | `data` (local) / `/data` (docker) | DB path |
 | `--http.address` | `LISTEN_ADDR` / `ADDRESS` | `0.0.0.0` | HTTP listen address |
@@ -157,6 +161,7 @@ Notes:
 - If `RPCS` is omitted, the service uses chainlist.org to auto-discover healthy RPCs for each chain ID.
 - New contracts registered via `POST /contracts` are persisted in the DB and picked up by the indexer on the next sync interval (uses `indexer.pollInterval`).
 - If a contract is saved with `startBlock: 0` (or omitted in `POST /contracts`), the indexer calculates the contract creation block on first registration and persists it in the DB.
+- `expiresAt` is required. The contract remains available until that timestamp (RFC3339). After expiration, the contract metadata, sync state, and indexed events are purged from the DB.
 
 ## Local usage
 
@@ -169,7 +174,7 @@ Notes:
 
 ```
 go run ./cmd/onchain-census-indexer \
-  --contracts 42220:0xYourContract:123456,1:0xAnotherContract:987654 \
+  --contracts 42220:0xYourContract:123456:2026-03-01T12:00:00Z,1:0xAnotherContract:987654:2026-03-15T00:00:00Z \
   --rpc https://rpc1.example \
   --rpc https://rpc2.example \
   --log.level debug
@@ -178,7 +183,7 @@ go run ./cmd/onchain-census-indexer \
 ### Run with env vars
 
 ```
-CONTRACTS=42220:0xYourContract:123456,1:0xAnotherContract:987654 \
+CONTRACTS=42220:0xYourContract:123456:2026-03-01T12:00:00Z,1:0xAnotherContract:987654:2026-03-15T00:00:00Z \
 RPCS=https://rpc1.example,https://rpc2.example \
 LOG_LEVEL=debug \
 go run ./cmd/onchain-census-indexer

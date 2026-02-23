@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ type ContractInfo struct {
 	ChainID    uint64         `json:"chainId"`
 	Address    common.Address `json:"address"`
 	StartBlock uint64         `json:"startBlock"`
+	ExpiresAt  time.Time      `json:"expiresAt"`
 	Synced     bool           `json:"synced"`
 }
 
@@ -41,9 +43,10 @@ func (c ContractInfo) Key() string {
 }
 
 type contractInfoJSON struct {
-	ChainID    uint64 `json:"chainId"`
-	Address    string `json:"address"`
-	StartBlock uint64 `json:"startBlock"`
+	ChainID    uint64     `json:"chainId"`
+	Address    string     `json:"address"`
+	StartBlock uint64     `json:"startBlock"`
+	ExpiresAt  *time.Time `json:"expiresAt"`
 }
 
 // UnmarshalJSON parses contract config from JSON with hex address string.
@@ -58,10 +61,24 @@ func (c *ContractInfo) UnmarshalJSON(data []byte) error {
 	if !common.IsHexAddress(tmp.Address) {
 		return fmt.Errorf("invalid contract address")
 	}
+	if tmp.ExpiresAt == nil {
+		return fmt.Errorf("expiresAt is required")
+	}
 	c.ChainID = tmp.ChainID
 	c.Address = common.HexToAddress(tmp.Address)
 	c.StartBlock = tmp.StartBlock
+	c.ExpiresAt = tmp.ExpiresAt.UTC()
 	return nil
+}
+
+// IsExpiredAt reports whether the contract should be purged at the provided time.
+func (c ContractInfo) IsExpiredAt(now time.Time) bool {
+	return !c.ExpiresAt.After(now)
+}
+
+type managedIndexer struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // Service manages multiple indexers.
@@ -74,7 +91,7 @@ type Service struct {
 	autoRPC              bool
 	autoRPCMaxEndpoints  int
 	mu                   sync.Mutex
-	indexers             map[string]*Indexer
+	indexers             map[string]*managedIndexer
 }
 
 // NewService creates a new indexer service.
@@ -105,7 +122,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		contractSyncInterval: cfg.ContractSyncInterval,
 		autoRPC:              cfg.AutoRPC,
 		autoRPCMaxEndpoints:  cfg.AutoRPCMaxEndpoints,
-		indexers:             make(map[string]*Indexer),
+		indexers:             make(map[string]*managedIndexer),
 	}, nil
 }
 
@@ -137,6 +154,8 @@ func (s *Service) syncContracts(ctx context.Context, errCh chan<- error) {
 		s.sendErr(errCh, fmt.Errorf("list contracts: %w", err))
 		return
 	}
+	now := time.Now().UTC()
+	activeKeys := make(map[string]struct{}, len(records))
 	for _, record := range records {
 		if !common.IsHexAddress(record.Contract) {
 			continue
@@ -145,10 +164,21 @@ func (s *Service) syncContracts(ctx context.Context, errCh chan<- error) {
 			ChainID:    record.ChainID,
 			Address:    common.HexToAddress(record.Contract),
 			StartBlock: record.StartBlock,
+			ExpiresAt:  record.ExpiresAt,
 		}
+		if cfg.IsExpiredAt(now) {
+			if err := s.purgeContract(ctx, cfg); err != nil {
+				s.sendErr(errCh, err)
+			}
+			continue
+		}
+		activeKeys[cfg.Key()] = struct{}{}
 		if err := s.ensureRegistered(ctx, cfg, errCh); err != nil {
 			s.sendErr(errCh, err)
 		}
+	}
+	if err := s.stopInactiveIndexers(ctx, activeKeys); err != nil {
+		s.sendErr(errCh, err)
 	}
 }
 
@@ -207,20 +237,92 @@ func (s *Service) ensureRegistered(ctx context.Context, cfg ContractInfo, errCh 
 	if err != nil {
 		return fmt.Errorf("create indexer: %w", err)
 	}
+	runCtx, cancel := context.WithCancel(ctx)
+	entry := &managedIndexer{
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
 
 	s.mu.Lock()
 	if _, exists := s.indexers[key]; exists {
 		s.mu.Unlock()
+		cancel()
+		close(entry.done)
 		return nil
 	}
-	s.indexers[key] = idx
+	s.indexers[key] = entry
 	s.mu.Unlock()
 
-	go func(indexerInstance *Indexer) {
-		s.sendErr(errCh, indexerInstance.Run(ctx))
-	}(idx)
+	go func(indexerInstance *Indexer, runEntry *managedIndexer, runKey string) {
+		defer close(runEntry.done)
+		err := indexerInstance.Run(runCtx)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.sendErr(errCh, err)
+		}
+		s.mu.Lock()
+		current, exists := s.indexers[runKey]
+		if exists && current == runEntry {
+			delete(s.indexers, runKey)
+		}
+		s.mu.Unlock()
+	}(idx, entry, key)
 
 	return nil
+}
+
+func (s *Service) purgeContract(ctx context.Context, cfg ContractInfo) error {
+	key := contractKey(cfg.ChainID, cfg.Address)
+	if err := s.stopIndexer(ctx, key); err != nil {
+		return fmt.Errorf("stop indexer for chainID %d contract %s: %w", cfg.ChainID, cfg.Address.Hex(), err)
+	}
+	if err := s.store.DeleteContractData(ctx, cfg.ChainID, cfg.Address); err != nil {
+		return fmt.Errorf("purge contract data for chainID %d contract %s: %w", cfg.ChainID, cfg.Address.Hex(), err)
+	}
+	log.Infow("purged expired contract",
+		"chainID", cfg.ChainID,
+		"contract", cfg.Address.Hex(),
+		"expiresAt", cfg.ExpiresAt,
+	)
+	return nil
+}
+
+func (s *Service) stopInactiveIndexers(ctx context.Context, activeKeys map[string]struct{}) error {
+	s.mu.Lock()
+	staleKeys := make([]string, 0, len(s.indexers))
+	for key := range s.indexers {
+		if _, ok := activeKeys[key]; ok {
+			continue
+		}
+		staleKeys = append(staleKeys, key)
+	}
+	s.mu.Unlock()
+
+	for _, key := range staleKeys {
+		if err := s.stopIndexer(ctx, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) stopIndexer(ctx context.Context, key string) error {
+	s.mu.Lock()
+	entry, exists := s.indexers[key]
+	if exists {
+		delete(s.indexers, key)
+	}
+	s.mu.Unlock()
+	if !exists {
+		return nil
+	}
+
+	entry.cancel()
+	select {
+	case <-entry.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Service) ensureEndpoints(ctx context.Context, chainID uint64) error {

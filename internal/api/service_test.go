@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/graphql-go/handler"
@@ -104,6 +106,13 @@ func TestHandleRootIncludesSyncedStatus(t *testing.T) {
 
 	contractSynced := common.HexToAddress("0x1111111111111111111111111111111111111111")
 	contractUnsynced := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	expiresAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	if err := eventStore.SaveContract(ctx, 1, contractSynced, 1, expiresAt); err != nil {
+		t.Fatalf("save synced contract: %v", err)
+	}
+	if err := eventStore.SaveContract(ctx, 2, contractUnsynced, 1, expiresAt); err != nil {
+		t.Fatalf("save unsynced contract: %v", err)
+	}
 	if err := eventStore.SaveEvents(ctx, 1, contractSynced, nil, 100); err != nil {
 		t.Fatalf("save synced contract block: %v", err)
 	}
@@ -169,7 +178,8 @@ func TestContractsWithSyncStatusRefreshesStartBlockFromStore(t *testing.T) {
 	eventStore := store.New(database)
 
 	contract := common.HexToAddress("0x5555555555555555555555555555555555555555")
-	if err := eventStore.SaveContract(ctx, 1, contract, 0); err != nil {
+	expiresAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	if err := eventStore.SaveContract(ctx, 1, contract, 0, expiresAt); err != nil {
 		t.Fatalf("save contract with zero start block: %v", err)
 	}
 	if err := eventStore.SetContractStartBlock(ctx, 1, contract, 12345); err != nil {
@@ -190,5 +200,113 @@ func TestContractsWithSyncStatusRefreshesStartBlockFromStore(t *testing.T) {
 	}
 	if contracts[0].StartBlock != 12345 {
 		t.Fatalf("expected refreshed start block 12345, got %d", contracts[0].StartBlock)
+	}
+}
+
+func TestSyncFromStorePrunesRemovedContracts(t *testing.T) {
+	ctx := context.Background()
+	database, err := metadb.New(db.TypeInMem, "")
+	if err != nil {
+		t.Fatalf("create in-memory db: %v", err)
+	}
+	defer func() {
+		if cerr := database.Close(); cerr != nil {
+			t.Fatalf("close db: %v", cerr)
+		}
+	}()
+	eventStore := store.New(database)
+
+	contractA := common.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	contractB := common.HexToAddress("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	expiresAt := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC)
+	if err := eventStore.SaveContract(ctx, 1, contractA, 10, expiresAt); err != nil {
+		t.Fatalf("save contract A: %v", err)
+	}
+	if err := eventStore.SaveContract(ctx, 1, contractB, 20, expiresAt); err != nil {
+		t.Fatalf("save contract B: %v", err)
+	}
+
+	svc, err := New(eventStore, nil)
+	if err != nil {
+		t.Fatalf("create api service: %v", err)
+	}
+	if err := svc.SyncFromStore(ctx); err != nil {
+		t.Fatalf("sync from store: %v", err)
+	}
+	if len(svc.contracts) != 2 {
+		t.Fatalf("expected 2 contracts after initial sync, got %d", len(svc.contracts))
+	}
+
+	if err := eventStore.DeleteContractData(ctx, 1, contractA); err != nil {
+		t.Fatalf("delete contract A data: %v", err)
+	}
+	if err := svc.SyncFromStore(ctx); err != nil {
+		t.Fatalf("sync from store after delete: %v", err)
+	}
+
+	if len(svc.contracts) != 1 {
+		t.Fatalf("expected 1 contract after pruning, got %d", len(svc.contracts))
+	}
+	if got := strings.ToLower(svc.contracts[0].Address.Hex()); got != strings.ToLower(contractB.Hex()) {
+		t.Fatalf("expected remaining contract %s, got %s", contractB.Hex(), got)
+	}
+	keyA := indexer.ContractInfo{ChainID: 1, Address: contractA}.Key()
+	if _, ok := svc.handlers[keyA]; ok {
+		t.Fatalf("expected handler for contract A to be removed")
+	}
+}
+
+func TestHandleContractsRejectsExpiredContract(t *testing.T) {
+	ctx := context.Background()
+	database, err := metadb.New(db.TypeInMem, "")
+	if err != nil {
+		t.Fatalf("create in-memory db: %v", err)
+	}
+	defer func() {
+		if cerr := database.Close(); cerr != nil {
+			t.Fatalf("close db: %v", cerr)
+		}
+	}()
+	eventStore := store.New(database)
+	svc, err := New(eventStore, nil)
+	if err != nil {
+		t.Fatalf("create api service: %v", err)
+	}
+
+	expiresAt := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	reqBody := `{"chainId":1,"address":"0x1111111111111111111111111111111111111111","startBlock":0,"expiresAt":"` + expiresAt + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/contracts", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+	svc.handleContracts(rec, req.WithContext(ctx))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d (body=%s)", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleContractsRejectsMissingExpiresAt(t *testing.T) {
+	ctx := context.Background()
+	database, err := metadb.New(db.TypeInMem, "")
+	if err != nil {
+		t.Fatalf("create in-memory db: %v", err)
+	}
+	defer func() {
+		if cerr := database.Close(); cerr != nil {
+			t.Fatalf("close db: %v", cerr)
+		}
+	}()
+	eventStore := store.New(database)
+	svc, err := New(eventStore, nil)
+	if err != nil {
+		t.Fatalf("create api service: %v", err)
+	}
+
+	reqBody := `{"chainId":1,"address":"0x1111111111111111111111111111111111111111","startBlock":0}`
+	req := httptest.NewRequest(http.MethodPost, "/contracts", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+	svc.handleContracts(rec, req.WithContext(ctx))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d (body=%s)", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
 }

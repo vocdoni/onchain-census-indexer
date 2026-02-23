@@ -86,7 +86,7 @@ func main() {
 
 	seeded := 0
 	for _, spec := range cfg.Contracts {
-		if err := eventStore.SaveContract(context.Background(), spec.ChainID, spec.Address, spec.StartBlock); err != nil {
+		if err := eventStore.SaveContract(context.Background(), spec.ChainID, spec.Address, spec.StartBlock, spec.ExpiresAt); err != nil {
 			log.Errorf("store contract %s: %v", spec.Address.Hex(), err)
 			continue
 		}

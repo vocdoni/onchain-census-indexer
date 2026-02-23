@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/vocdoni/davinci-node/db"
@@ -101,8 +102,9 @@ func (s *Store) SaveEvents(ctx context.Context, chainID uint64, contract common.
 	return nil
 }
 
-// SaveContract stores a contract configuration if it does not exist yet.
-func (s *Store) SaveContract(ctx context.Context, chainID uint64, contract common.Address, startBlock uint64) error {
+// SaveContract stores a contract configuration.
+// If the contract already exists, startBlock is preserved and expiresAt is updated.
+func (s *Store) SaveContract(ctx context.Context, chainID uint64, contract common.Address, startBlock uint64, expiresAt time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -112,18 +114,46 @@ func (s *Store) SaveContract(ctx context.Context, chainID uint64, contract commo
 	if contract == (common.Address{}) {
 		return fmt.Errorf("contract address is required")
 	}
+	if expiresAt.IsZero() {
+		return fmt.Errorf("expiresAt is required")
+	}
+	expiresAt = expiresAt.UTC()
+
 	key := contractKey(chainID, contract)
-	if _, err := s.db.Get(key); err == nil {
+	payload, err := s.db.Get(key)
+	if err == nil {
+		var record ContractRecord
+		if err := json.Unmarshal(payload, &record); err != nil {
+			return fmt.Errorf("decode contract: %w", err)
+		}
+		if record.ExpiresAt.Equal(expiresAt) {
+			return nil
+		}
+		record.ExpiresAt = expiresAt
+		updated, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal contract: %w", err)
+		}
+		tx := s.db.WriteTx()
+		defer tx.Discard()
+		if err := tx.Set(key, updated); err != nil {
+			return fmt.Errorf("store contract: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit contract: %w", err)
+		}
 		return nil
-	} else if !errors.Is(err, db.ErrKeyNotFound) {
+	}
+	if !errors.Is(err, db.ErrKeyNotFound) {
 		return fmt.Errorf("check contract: %w", err)
 	}
 	record := ContractRecord{
 		ChainID:    chainID,
 		Contract:   contract.Hex(),
 		StartBlock: startBlock,
+		ExpiresAt:  expiresAt,
 	}
-	payload, err := json.Marshal(record)
+	payload, err = json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("marshal contract: %w", err)
 	}
@@ -213,6 +243,59 @@ func (s *Store) ListContracts(ctx context.Context) ([]ContractRecord, error) {
 		return nil, fmt.Errorf("iterate contracts: %w", err)
 	}
 	return results, nil
+}
+
+// DeleteContractData removes contract metadata and all indexed events for that contract.
+func (s *Store) DeleteContractData(ctx context.Context, chainID uint64, contract common.Address) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if chainID == 0 {
+		return fmt.Errorf("chainID is required")
+	}
+	if contract == (common.Address{}) {
+		return fmt.Errorf("contract address is required")
+	}
+
+	eventKeys := make([][]byte, 0)
+	var iterErr error
+	err := s.db.Iterate(eventPrefix(chainID, contract), func(key, _ []byte) bool {
+		if err := ctx.Err(); err != nil {
+			iterErr = err
+			return false
+		}
+		keyCopy := append([]byte(nil), key...)
+		eventKeys = append(eventKeys, keyCopy)
+		return true
+	})
+	if iterErr != nil {
+		return iterErr
+	}
+	if err != nil {
+		return fmt.Errorf("iterate contract events: %w", err)
+	}
+
+	tx := s.db.WriteTx()
+	defer tx.Discard()
+
+	for _, key := range eventKeys {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := tx.Delete(key); err != nil {
+			return fmt.Errorf("delete event: %w", err)
+		}
+	}
+	if err := tx.Delete(lastBlockKey(chainID, contract)); err != nil {
+		return fmt.Errorf("delete last indexed block: %w", err)
+	}
+	if err := tx.Delete(contractKey(chainID, contract)); err != nil {
+		return fmt.Errorf("delete contract: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit contract purge: %w", err)
+	}
+	return nil
 }
 
 // ListOptions defines pagination and ordering options when listing events.
@@ -385,9 +468,10 @@ func lastBlockKey(chainID uint64, contract common.Address) []byte {
 
 // ContractRecord represents a stored contract configuration.
 type ContractRecord struct {
-	ChainID    uint64 `json:"chainId"`
-	Contract   string `json:"contract"`
-	StartBlock uint64 `json:"startBlock"`
+	ChainID    uint64    `json:"chainId"`
+	Contract   string    `json:"contract"`
+	StartBlock uint64    `json:"startBlock"`
+	ExpiresAt  time.Time `json:"expiresAt"`
 }
 
 func contractKey(chainID uint64, contract common.Address) []byte {
