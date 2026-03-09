@@ -151,7 +151,8 @@ Flags override environment variables. Defaults shown where available.
 | `--http.address` | `LISTEN_ADDR` / `ADDRESS` | `0.0.0.0` | HTTP listen address |
 | `--http.port` | `LISTEN_PORT` / `PORT` | `8080` | HTTP listen port |
 | `--http.corsAllowedOrigins` | `CORS_ALLOWED_ORIGINS` | `*` | Allowed CORS origins (comma/space/semicolon separated) |
-| `--indexer.pollInterval` | `POLL_INTERVAL` | `5s` | Polling interval |
+| `--indexer.pollInterval` | `POLL_INTERVAL` | `5s` | Event polling interval |
+| `--indexer.contractSyncInterval` | `CONTRACT_SYNC_INTERVAL` | `1s` | Contract reconciliation and expiration purge interval |
 | `--indexer.batchSize` | `BATCH_SIZE` | `2000` | Log batch size |
 | `--log.level` | `LOG_LEVEL` | `debug` | Log level |
 
@@ -159,9 +160,9 @@ Notes:
 - `--contract` is deprecated in favor of `--contracts`.
 - For env values, use comma‑separated lists (avoid wrapping in quotes that become part of the value).
 - If `RPCS` is omitted, the service uses chainlist.org to auto-discover healthy RPCs for each chain ID.
-- New contracts registered via `POST /contracts` are persisted in the DB and picked up by the indexer on the next sync interval (uses `indexer.pollInterval`).
+- New contracts registered via `POST /contracts` are persisted in the DB and picked up by the indexer on the next contract sync interval (uses `indexer.contractSyncInterval`).
 - If a contract is saved with `startBlock: 0` (or omitted in `POST /contracts`), the indexer calculates the contract creation block on first registration and persists it in the DB.
-- `expiresAt` is required. The contract remains available until that timestamp (RFC3339). After expiration, the contract metadata, sync state, and indexed events are purged from the DB.
+- `expiresAt` is required. The contract remains available until that timestamp (RFC3339). After expiration, the contract metadata, sync state, and indexed events are purged from the DB, and the store is compacted to reclaim disk space.
 
 ## Local usage
 

@@ -18,6 +18,10 @@ import (
 	"github.com/vocdoni/onchain-census-indexer/internal/store"
 )
 
+func futureTime(offset time.Duration) time.Time {
+	return time.Now().UTC().Add(offset).Truncate(time.Second)
+}
+
 func TestWithCORSPreflightAllowedOrigin(t *testing.T) {
 	handler := withCORS(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatalf("preflight request should not reach wrapped handler")
@@ -106,7 +110,7 @@ func TestHandleRootIncludesSyncedStatus(t *testing.T) {
 
 	contractSynced := common.HexToAddress("0x1111111111111111111111111111111111111111")
 	contractUnsynced := common.HexToAddress("0x2222222222222222222222222222222222222222")
-	expiresAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	expiresAt := futureTime(24 * time.Hour)
 	if err := eventStore.SaveContract(ctx, 1, contractSynced, 1, expiresAt); err != nil {
 		t.Fatalf("save synced contract: %v", err)
 	}
@@ -178,7 +182,7 @@ func TestContractsWithSyncStatusRefreshesStartBlockFromStore(t *testing.T) {
 	eventStore := store.New(database)
 
 	contract := common.HexToAddress("0x5555555555555555555555555555555555555555")
-	expiresAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	expiresAt := futureTime(24 * time.Hour)
 	if err := eventStore.SaveContract(ctx, 1, contract, 0, expiresAt); err != nil {
 		t.Fatalf("save contract with zero start block: %v", err)
 	}
@@ -218,7 +222,7 @@ func TestSyncFromStorePrunesRemovedContracts(t *testing.T) {
 
 	contractA := common.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	contractB := common.HexToAddress("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-	expiresAt := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC)
+	expiresAt := futureTime(24 * time.Hour)
 	if err := eventStore.SaveContract(ctx, 1, contractA, 10, expiresAt); err != nil {
 		t.Fatalf("save contract A: %v", err)
 	}

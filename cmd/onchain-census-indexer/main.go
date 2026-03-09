@@ -35,6 +35,7 @@ func main() {
 		"listen", cfg.HTTP.ListenAddr,
 		"corsAllowedOrigins", strings.Join(cfg.HTTP.CORSAllowedOrigins, ","),
 		"pollInterval", cfg.Indexer.PollInterval.String(),
+		"contractSyncInterval", cfg.Indexer.ContractSyncInterval.String(),
 		"batchSize", cfg.Indexer.BatchSize,
 		"rpcs", strings.Join(cfg.RPCs, ","),
 	)
@@ -72,7 +73,7 @@ func main() {
 		Store:                eventStore,
 		PollInterval:         cfg.Indexer.PollInterval,
 		BatchSize:            cfg.Indexer.BatchSize,
-		ContractSyncInterval: cfg.Indexer.PollInterval,
+		ContractSyncInterval: cfg.Indexer.ContractSyncInterval,
 		AutoRPC:              autoRPC,
 		AutoRPCMaxEndpoints:  3,
 	})

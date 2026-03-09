@@ -10,6 +10,10 @@ import (
 	"github.com/vocdoni/davinci-node/db/metadb"
 )
 
+func futureTime(offset time.Duration) time.Time {
+	return time.Now().UTC().Add(offset).Truncate(time.Second)
+}
+
 func TestStoreListEvents(t *testing.T) {
 	ctx := context.Background()
 	database, err := metadb.New(db.TypeInMem, "")
@@ -103,7 +107,7 @@ func TestSetContractStartBlock(t *testing.T) {
 
 	contractZero := common.HexToAddress("0x3333333333333333333333333333333333333333")
 	contractFixed := common.HexToAddress("0x4444444444444444444444444444444444444444")
-	expiresAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	expiresAt := futureTime(24 * time.Hour)
 	if err := eventStore.SaveContract(ctx, 10, contractZero, 0, expiresAt); err != nil {
 		t.Fatalf("save contract with zero start block: %v", err)
 	}
@@ -149,12 +153,13 @@ func TestSaveContractUpdatesExpiresAt(t *testing.T) {
 	eventStore := New(database)
 
 	contract := common.HexToAddress("0x5555555555555555555555555555555555555555")
-	initialExpiresAt := time.Date(2026, 2, 25, 10, 0, 0, 0, time.FixedZone("UTC+2", 2*60*60))
+	base := time.Now().UTC().Truncate(time.Second)
+	initialExpiresAt := base.Add(24 * time.Hour).In(time.FixedZone("UTC+2", 2*60*60))
 	if err := eventStore.SaveContract(ctx, 99, contract, 12, initialExpiresAt); err != nil {
 		t.Fatalf("save contract with expiresAt: %v", err)
 	}
 
-	updatedExpiresAt := time.Date(2026, 2, 26, 14, 30, 0, 0, time.UTC)
+	updatedExpiresAt := base.Add(48 * time.Hour)
 	if err := eventStore.SaveContract(ctx, 99, contract, 999, updatedExpiresAt); err != nil {
 		t.Fatalf("update contract expiresAt: %v", err)
 	}
@@ -177,81 +182,106 @@ func TestSaveContractUpdatesExpiresAt(t *testing.T) {
 }
 
 func TestDeleteContractData(t *testing.T) {
-	ctx := context.Background()
-	database, err := metadb.New(db.TypeInMem, "")
-	if err != nil {
-		t.Fatalf("create in-memory db: %v", err)
-	}
-	defer func() {
-		if cerr := database.Close(); cerr != nil {
-			t.Fatalf("close db: %v", cerr)
-		}
-	}()
-	eventStore := New(database)
-
-	primary := common.HexToAddress("0x6666666666666666666666666666666666666666")
-	secondary := common.HexToAddress("0x7777777777777777777777777777777777777777")
-	expiresAt := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC)
-	if err := eventStore.SaveContract(ctx, 1, primary, 100, expiresAt); err != nil {
-		t.Fatalf("save primary contract: %v", err)
-	}
-	if err := eventStore.SaveContract(ctx, 1, secondary, 200, expiresAt); err != nil {
-		t.Fatalf("save secondary contract: %v", err)
-	}
-	if err := eventStore.SaveEvents(ctx, 1, primary, []Event{
-		{ChainID: 1, Contract: primary.Hex(), Account: "0xabc", PreviousWeight: "1", NewWeight: "2", BlockNumber: 101, LogIndex: 0},
-	}, 101); err != nil {
-		t.Fatalf("save primary events: %v", err)
-	}
-	if err := eventStore.SaveEvents(ctx, 1, secondary, []Event{
-		{ChainID: 1, Contract: secondary.Hex(), Account: "0xdef", PreviousWeight: "2", NewWeight: "3", BlockNumber: 201, LogIndex: 0},
-	}, 201); err != nil {
-		t.Fatalf("save secondary events: %v", err)
+	tests := []struct {
+		name   string
+		dbType string
+		path   func(t *testing.T) string
+	}{
+		{
+			name:   "inmemory",
+			dbType: db.TypeInMem,
+			path: func(*testing.T) string {
+				return ""
+			},
+		},
+		{
+			name:   "pebble",
+			dbType: db.TypePebble,
+			path: func(t *testing.T) string {
+				return t.TempDir()
+			},
+		},
 	}
 
-	if err := eventStore.DeleteContractData(ctx, 1, primary); err != nil {
-		t.Fatalf("delete primary contract data: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, err := metadb.New(tt.dbType, tt.path(t))
+			if err != nil {
+				t.Fatalf("create %s db: %v", tt.dbType, err)
+			}
+			defer func() {
+				if cerr := database.Close(); cerr != nil {
+					t.Fatalf("close db: %v", cerr)
+				}
+			}()
+			eventStore := New(database)
 
-	records, err := eventStore.ListContracts(ctx)
-	if err != nil {
-		t.Fatalf("list contracts: %v", err)
-	}
-	if len(records) != 1 || records[0].Contract != secondary.Hex() {
-		t.Fatalf("expected only secondary contract to remain, got %+v", records)
-	}
+			primary := common.HexToAddress("0x6666666666666666666666666666666666666666")
+			secondary := common.HexToAddress("0x7777777777777777777777777777777777777777")
+			expiresAt := futureTime(24 * time.Hour)
+			if err := eventStore.SaveContract(ctx, 1, primary, 100, expiresAt); err != nil {
+				t.Fatalf("save primary contract: %v", err)
+			}
+			if err := eventStore.SaveContract(ctx, 1, secondary, 200, expiresAt); err != nil {
+				t.Fatalf("save secondary contract: %v", err)
+			}
+			if err := eventStore.SaveEvents(ctx, 1, primary, []Event{
+				{ChainID: 1, Contract: primary.Hex(), Account: "0xabc", PreviousWeight: "1", NewWeight: "2", BlockNumber: 101, LogIndex: 0},
+			}, 101); err != nil {
+				t.Fatalf("save primary events: %v", err)
+			}
+			if err := eventStore.SaveEvents(ctx, 1, secondary, []Event{
+				{ChainID: 1, Contract: secondary.Hex(), Account: "0xdef", PreviousWeight: "2", NewWeight: "3", BlockNumber: 201, LogIndex: 0},
+			}, 201); err != nil {
+				t.Fatalf("save secondary events: %v", err)
+			}
 
-	if _, ok, err := eventStore.LastIndexedBlock(ctx, 1, primary); err != nil {
-		t.Fatalf("last indexed block for primary: %v", err)
-	} else if ok {
-		t.Fatalf("expected no last indexed block for deleted contract")
-	}
-	if lastSecondary, ok, err := eventStore.LastIndexedBlock(ctx, 1, secondary); err != nil {
-		t.Fatalf("last indexed block for secondary: %v", err)
-	} else if !ok || lastSecondary != 201 {
-		t.Fatalf("expected secondary last indexed block 201, got %d (ok=%t)", lastSecondary, ok)
-	}
+			if err := eventStore.DeleteContractData(ctx, 1, primary); err != nil {
+				t.Fatalf("delete primary contract data: %v", err)
+			}
 
-	primaryEvents, err := eventStore.ListEvents(ctx, ListOptions{
-		ChainID:  1,
-		Contract: primary,
-	})
-	if err != nil {
-		t.Fatalf("list primary events: %v", err)
-	}
-	if len(primaryEvents) != 0 {
-		t.Fatalf("expected no events for deleted contract, got %d", len(primaryEvents))
-	}
+			records, err := eventStore.ListContracts(ctx)
+			if err != nil {
+				t.Fatalf("list contracts: %v", err)
+			}
+			if len(records) != 1 || records[0].Contract != secondary.Hex() {
+				t.Fatalf("expected only secondary contract to remain, got %+v", records)
+			}
 
-	secondaryEvents, err := eventStore.ListEvents(ctx, ListOptions{
-		ChainID:  1,
-		Contract: secondary,
-	})
-	if err != nil {
-		t.Fatalf("list secondary events: %v", err)
-	}
-	if len(secondaryEvents) != 1 {
-		t.Fatalf("expected 1 event for secondary contract, got %d", len(secondaryEvents))
+			if _, ok, err := eventStore.LastIndexedBlock(ctx, 1, primary); err != nil {
+				t.Fatalf("last indexed block for primary: %v", err)
+			} else if ok {
+				t.Fatalf("expected no last indexed block for deleted contract")
+			}
+			if lastSecondary, ok, err := eventStore.LastIndexedBlock(ctx, 1, secondary); err != nil {
+				t.Fatalf("last indexed block for secondary: %v", err)
+			} else if !ok || lastSecondary != 201 {
+				t.Fatalf("expected secondary last indexed block 201, got %d (ok=%t)", lastSecondary, ok)
+			}
+
+			primaryEvents, err := eventStore.ListEvents(ctx, ListOptions{
+				ChainID:  1,
+				Contract: primary,
+			})
+			if err != nil {
+				t.Fatalf("list primary events: %v", err)
+			}
+			if len(primaryEvents) != 0 {
+				t.Fatalf("expected no events for deleted contract, got %d", len(primaryEvents))
+			}
+
+			secondaryEvents, err := eventStore.ListEvents(ctx, ListOptions{
+				ChainID:  1,
+				Contract: secondary,
+			})
+			if err != nil {
+				t.Fatalf("list secondary events: %v", err)
+			}
+			if len(secondaryEvents) != 1 {
+				t.Fatalf("expected 1 event for secondary contract, got %d", len(secondaryEvents))
+			}
+		})
 	}
 }
 

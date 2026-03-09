@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -257,14 +258,15 @@ func (s *Store) DeleteContractData(ctx context.Context, chainID uint64, contract
 		return fmt.Errorf("contract address is required")
 	}
 
+	prefix := eventPrefix(chainID, contract)
 	eventKeys := make([][]byte, 0)
 	var iterErr error
-	err := s.db.Iterate(eventPrefix(chainID, contract), func(key, _ []byte) bool {
+	err := s.db.Iterate(prefix, func(key, _ []byte) bool {
 		if err := ctx.Err(); err != nil {
 			iterErr = err
 			return false
 		}
-		keyCopy := append([]byte(nil), key...)
+		keyCopy := fullIteratedKey(prefix, key)
 		eventKeys = append(eventKeys, keyCopy)
 		return true
 	})
@@ -294,6 +296,17 @@ func (s *Store) DeleteContractData(ctx context.Context, chainID uint64, contract
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit contract purge: %w", err)
+	}
+	return nil
+}
+
+// Compact triggers storage compaction so delete tombstones are reclaimed by the backing DB.
+func (s *Store) Compact(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.db.Compact(); err != nil {
+		return fmt.Errorf("compact store: %w", err)
 	}
 	return nil
 }
@@ -441,6 +454,16 @@ func eventPrefix(chainID uint64, contract common.Address) []byte {
 	offset += 8
 	copy(key[offset:], contract.Bytes())
 	return key
+}
+
+func fullIteratedKey(prefix, key []byte) []byte {
+	if bytes.HasPrefix(key, prefix) {
+		return append([]byte(nil), key...)
+	}
+	full := make([]byte, 0, len(prefix)+len(key))
+	full = append(full, prefix...)
+	full = append(full, key...)
+	return full
 }
 
 func encodeUint64(value uint64) []byte {

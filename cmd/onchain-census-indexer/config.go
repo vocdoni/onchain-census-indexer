@@ -35,8 +35,9 @@ type HTTPConfig struct {
 }
 
 type IndexerConfig struct {
-	PollInterval time.Duration `mapstructure:"pollInterval"`
-	BatchSize    uint64        `mapstructure:"batchSize"`
+	PollInterval         time.Duration `mapstructure:"pollInterval"`
+	ContractSyncInterval time.Duration `mapstructure:"contractSyncInterval"`
+	BatchSize            uint64        `mapstructure:"batchSize"`
 }
 
 type LogConfig struct {
@@ -54,6 +55,7 @@ func LoadConfig() (*Config, error) {
 	pflag.Int("http.port", 8080, "HTTP listen port")
 	pflag.StringSlice("http.corsAllowedOrigins", []string{"*"}, "Allowed CORS origins (repeatable or comma-separated)")
 	pflag.Duration("indexer.pollInterval", 5*time.Second, "Polling interval")
+	pflag.Duration("indexer.contractSyncInterval", time.Second, "Contract reconciliation and expiration purge interval")
 	pflag.Uint64("indexer.batchSize", 2000, "Block batch size per filterLogs")
 	pflag.String("log.level", log.LogLevelDebug, "Log level (debug, info, warn, error)")
 	pflag.Parse()
@@ -72,6 +74,7 @@ func LoadConfig() (*Config, error) {
 	_ = config.BindEnv("http.port", "LISTEN_PORT", "PORT")
 	_ = config.BindEnv("http.corsAllowedOrigins", "CORS_ALLOWED_ORIGINS")
 	_ = config.BindEnv("indexer.pollInterval", "POLL_INTERVAL")
+	_ = config.BindEnv("indexer.contractSyncInterval", "CONTRACT_SYNC_INTERVAL")
 	_ = config.BindEnv("indexer.batchSize", "BATCH_SIZE")
 	_ = config.BindEnv("log.level", "LOG_LEVEL")
 
@@ -95,6 +98,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if cfg.Indexer.PollInterval == 0 {
 		cfg.Indexer.PollInterval = 5 * time.Second
+	}
+	if cfg.Indexer.ContractSyncInterval == 0 {
+		cfg.Indexer.ContractSyncInterval = time.Second
 	}
 	if cfg.Indexer.BatchSize == 0 {
 		cfg.Indexer.BatchSize = 2000

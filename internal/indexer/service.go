@@ -156,6 +156,7 @@ func (s *Service) syncContracts(ctx context.Context, errCh chan<- error) {
 	}
 	now := time.Now().UTC()
 	activeKeys := make(map[string]struct{}, len(records))
+	purgedAny := false
 	for _, record := range records {
 		if !common.IsHexAddress(record.Contract) {
 			continue
@@ -169,6 +170,8 @@ func (s *Service) syncContracts(ctx context.Context, errCh chan<- error) {
 		if cfg.IsExpiredAt(now) {
 			if err := s.purgeContract(ctx, cfg); err != nil {
 				s.sendErr(errCh, err)
+			} else {
+				purgedAny = true
 			}
 			continue
 		}
@@ -179,6 +182,11 @@ func (s *Service) syncContracts(ctx context.Context, errCh chan<- error) {
 	}
 	if err := s.stopInactiveIndexers(ctx, activeKeys); err != nil {
 		s.sendErr(errCh, err)
+	}
+	if purgedAny {
+		if err := s.store.Compact(ctx); err != nil {
+			s.sendErr(errCh, fmt.Errorf("compact store after purge: %w", err))
+		}
 	}
 }
 
