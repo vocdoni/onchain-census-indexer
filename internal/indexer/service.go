@@ -23,6 +23,9 @@ type ServiceConfig struct {
 	Store                *store.Store
 	PollInterval         time.Duration
 	BatchSize            uint64
+	VerifyBatchSize      uint64
+	Confirmations        uint64
+	TailRescanDepth      uint64
 	ContractSyncInterval time.Duration
 	AutoRPC              bool
 	AutoRPCMaxEndpoints  int
@@ -87,6 +90,9 @@ type Service struct {
 	store                *store.Store
 	pollInterval         time.Duration
 	batchSize            uint64
+	verifyBatchSize      uint64
+	confirmations        uint64
+	tailRescanDepth      uint64
 	contractSyncInterval time.Duration
 	autoRPC              bool
 	autoRPCMaxEndpoints  int
@@ -108,6 +114,12 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if cfg.BatchSize == 0 {
 		cfg.BatchSize = 2000
 	}
+	if cfg.VerifyBatchSize == 0 {
+		cfg.VerifyBatchSize = cfg.BatchSize
+	}
+	if cfg.TailRescanDepth == 0 {
+		cfg.TailRescanDepth = cfg.VerifyBatchSize
+	}
 	if cfg.ContractSyncInterval <= 0 {
 		cfg.ContractSyncInterval = 10 * time.Second
 	}
@@ -119,6 +131,9 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		store:                cfg.Store,
 		pollInterval:         cfg.PollInterval,
 		batchSize:            cfg.BatchSize,
+		verifyBatchSize:      cfg.VerifyBatchSize,
+		confirmations:        cfg.Confirmations,
+		tailRescanDepth:      cfg.TailRescanDepth,
 		contractSyncInterval: cfg.ContractSyncInterval,
 		autoRPC:              cfg.AutoRPC,
 		autoRPCMaxEndpoints:  cfg.AutoRPCMaxEndpoints,
@@ -234,13 +249,16 @@ func (s *Service) ensureRegistered(ctx context.Context, cfg ContractInfo, errCh 
 		)
 	}
 	idx, err := New(Config{
-		Client:       client,
-		Store:        s.store,
-		ChainID:      cfg.ChainID,
-		Contract:     cfg.Address,
-		StartBlock:   cfg.StartBlock,
-		PollInterval: s.pollInterval,
-		BatchSize:    s.batchSize,
+		Client:          client,
+		Store:           s.store,
+		ChainID:         cfg.ChainID,
+		Contract:        cfg.Address,
+		StartBlock:      cfg.StartBlock,
+		PollInterval:    s.pollInterval,
+		BatchSize:       s.batchSize,
+		VerifyBatchSize: s.verifyBatchSize,
+		Confirmations:   s.confirmations,
+		TailRescanDepth: s.tailRescanDepth,
 	})
 	if err != nil {
 		return fmt.Errorf("create indexer: %w", err)

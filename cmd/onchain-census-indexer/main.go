@@ -37,6 +37,9 @@ func main() {
 		"pollInterval", cfg.Indexer.PollInterval.String(),
 		"contractSyncInterval", cfg.Indexer.ContractSyncInterval.String(),
 		"batchSize", cfg.Indexer.BatchSize,
+		"verifyBatchSize", cfg.Indexer.VerifyBatchSize,
+		"confirmations", cfg.Indexer.Confirmations,
+		"tailRescanDepth", cfg.Indexer.TailRescanDepth,
 		"rpcs", strings.Join(cfg.RPCs, ","),
 	)
 
@@ -73,6 +76,9 @@ func main() {
 		Store:                eventStore,
 		PollInterval:         cfg.Indexer.PollInterval,
 		BatchSize:            cfg.Indexer.BatchSize,
+		VerifyBatchSize:      cfg.Indexer.VerifyBatchSize,
+		Confirmations:        cfg.Indexer.Confirmations,
+		TailRescanDepth:      cfg.Indexer.TailRescanDepth,
 		ContractSyncInterval: cfg.Indexer.ContractSyncInterval,
 		AutoRPC:              autoRPC,
 		AutoRPCMaxEndpoints:  3,
@@ -80,7 +86,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("create indexer service: %v", err)
 	}
-	apiService, err := api.New(eventStore, pool)
+	apiService, err := api.New(eventStore, pool, cfg.Indexer.Confirmations)
 	if err != nil {
 		log.Fatalf("create api service: %v", err)
 	}
@@ -105,6 +111,7 @@ func main() {
 	defer stop()
 
 	indexerErr := indexerService.Start(ctx)
+	go logIndexerErrors(ctx, indexerErr)
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -119,21 +126,22 @@ func main() {
 
 	select {
 	case <-ctx.Done():
-	case err := <-indexerErr:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Warnf("indexer stopped: %v", err)
-		}
 	case err := <-serverErr:
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Warnf("http server stopped: %v", err)
 		}
 	}
+}
 
-	select {
-	case err := <-indexerErr:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Warnf("indexer stopped: %v", err)
+func logIndexerErrors(ctx context.Context, errCh <-chan error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				log.Warnf("indexer error: %v", err)
+			}
 		}
-	default:
 	}
 }

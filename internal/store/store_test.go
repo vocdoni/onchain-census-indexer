@@ -51,6 +51,16 @@ func TestStoreListEvents(t *testing.T) {
 	if lastBlock != 3 {
 		t.Fatalf("expected last block 3, got %d", lastBlock)
 	}
+	verifiedBlock, ok, err := store.LastVerifiedBlock(ctx, 1, primaryContract)
+	if err != nil {
+		t.Fatalf("last verified block: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected last verified block")
+	}
+	if verifiedBlock != 3 {
+		t.Fatalf("expected verified block 3, got %d", verifiedBlock)
+	}
 
 	tests := []struct {
 		name           string
@@ -254,10 +264,20 @@ func TestDeleteContractData(t *testing.T) {
 			} else if ok {
 				t.Fatalf("expected no last indexed block for deleted contract")
 			}
+			if _, ok, err := eventStore.LastVerifiedBlock(ctx, 1, primary); err != nil {
+				t.Fatalf("last verified block for primary: %v", err)
+			} else if ok {
+				t.Fatalf("expected no last verified block for deleted contract")
+			}
 			if lastSecondary, ok, err := eventStore.LastIndexedBlock(ctx, 1, secondary); err != nil {
 				t.Fatalf("last indexed block for secondary: %v", err)
 			} else if !ok || lastSecondary != 201 {
 				t.Fatalf("expected secondary last indexed block 201, got %d (ok=%t)", lastSecondary, ok)
+			}
+			if lastSecondaryVerified, ok, err := eventStore.LastVerifiedBlock(ctx, 1, secondary); err != nil {
+				t.Fatalf("last verified block for secondary: %v", err)
+			} else if !ok || lastSecondaryVerified != 201 {
+				t.Fatalf("expected secondary last verified block 201, got %d (ok=%t)", lastSecondaryVerified, ok)
 			}
 
 			primaryEvents, err := eventStore.ListEvents(ctx, ListOptions{
@@ -301,5 +321,70 @@ func TestSaveContractRequiresExpiresAt(t *testing.T) {
 	contract := common.HexToAddress("0x8888888888888888888888888888888888888888")
 	if err := eventStore.SaveContract(ctx, 1, contract, 10, time.Time{}); err == nil {
 		t.Fatalf("expected error when expiresAt is missing")
+	}
+}
+
+func TestReplaceEventsInRange(t *testing.T) {
+	ctx := context.Background()
+	database, err := metadb.New(db.TypeInMem, "")
+	if err != nil {
+		t.Fatalf("create in-memory db: %v", err)
+	}
+	defer func() {
+		if cerr := database.Close(); cerr != nil {
+			t.Fatalf("close db: %v", cerr)
+		}
+	}()
+	eventStore := New(database)
+
+	contract := common.HexToAddress("0x9999999999999999999999999999999999999999")
+	initial := []Event{
+		{ChainID: 1, Contract: contract.Hex(), Account: "0xaaa", PreviousWeight: "1", NewWeight: "2", BlockNumber: 10, LogIndex: 0},
+		{ChainID: 1, Contract: contract.Hex(), Account: "0xbbb", PreviousWeight: "2", NewWeight: "3", BlockNumber: 12, LogIndex: 0},
+	}
+	if err := eventStore.SaveEvents(ctx, 1, contract, initial, 12); err != nil {
+		t.Fatalf("save initial events: %v", err)
+	}
+
+	indexed := uint64(12)
+	verified := uint64(11)
+	replacement := []Event{
+		{ChainID: 1, Contract: contract.Hex(), Account: "0xaaa", PreviousWeight: "1", NewWeight: "2", BlockNumber: 10, LogIndex: 0},
+		{ChainID: 1, Contract: contract.Hex(), Account: "0xccc", PreviousWeight: "3", NewWeight: "4", BlockNumber: 11, LogIndex: 0},
+	}
+	if err := eventStore.ReplaceEventsInRange(ctx, 1, contract, 10, 11, replacement, ReplaceOptions{
+		IndexedUntil:  &indexed,
+		VerifiedUntil: &verified,
+	}); err != nil {
+		t.Fatalf("replace events in range: %v", err)
+	}
+
+	events, err := eventStore.ListEvents(ctx, ListOptions{
+		ChainID:  1,
+		Contract: contract,
+	})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events after replacement, got %d", len(events))
+	}
+	if events[1].BlockNumber != 11 || events[1].Account != "0xccc" {
+		t.Fatalf("expected replacement event at block 11, got %+v", events[1])
+	}
+
+	gotIndexed, ok, err := eventStore.LastIndexedBlock(ctx, 1, contract)
+	if err != nil {
+		t.Fatalf("last indexed block: %v", err)
+	}
+	if !ok || gotIndexed != 12 {
+		t.Fatalf("expected indexed block 12, got %d (ok=%t)", gotIndexed, ok)
+	}
+	gotVerified, ok, err := eventStore.LastVerifiedBlock(ctx, 1, contract)
+	if err != nil {
+		t.Fatalf("last verified block: %v", err)
+	}
+	if !ok || gotVerified != 11 {
+		t.Fatalf("expected verified block 11, got %d (ok=%t)", gotVerified, ok)
 	}
 }
