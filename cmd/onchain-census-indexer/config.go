@@ -38,6 +38,9 @@ type IndexerConfig struct {
 	PollInterval         time.Duration `mapstructure:"pollInterval"`
 	ContractSyncInterval time.Duration `mapstructure:"contractSyncInterval"`
 	BatchSize            uint64        `mapstructure:"batchSize"`
+	VerifyBatchSize      uint64        `mapstructure:"verifyBatchSize"`
+	Confirmations        uint64        `mapstructure:"confirmations"`
+	TailRescanDepth      uint64        `mapstructure:"tailRescanDepth"`
 }
 
 type LogConfig struct {
@@ -56,7 +59,10 @@ func LoadConfig() (*Config, error) {
 	pflag.StringSlice("http.corsAllowedOrigins", []string{"*"}, "Allowed CORS origins (repeatable or comma-separated)")
 	pflag.Duration("indexer.pollInterval", 5*time.Second, "Polling interval")
 	pflag.Duration("indexer.contractSyncInterval", time.Second, "Contract reconciliation and expiration purge interval")
-	pflag.Uint64("indexer.batchSize", 2000, "Block batch size per filterLogs")
+	pflag.Uint64("indexer.batchSize", 50, "Block batch size per filterLogs")
+	pflag.Uint64("indexer.verifyBatchSize", 0, "Block batch size per verification rescan (defaults to batch size)")
+	pflag.Uint64("indexer.confirmations", 12, "Confirmation depth before blocks are considered safe to verify")
+	pflag.Uint64("indexer.tailRescanDepth", 0, "Depth of the verified tail window to continuously rescan (defaults to verify batch size)")
 	pflag.String("log.level", log.LogLevelDebug, "Log level (debug, info, warn, error)")
 	pflag.Parse()
 
@@ -76,6 +82,9 @@ func LoadConfig() (*Config, error) {
 	_ = config.BindEnv("indexer.pollInterval", "POLL_INTERVAL")
 	_ = config.BindEnv("indexer.contractSyncInterval", "CONTRACT_SYNC_INTERVAL")
 	_ = config.BindEnv("indexer.batchSize", "BATCH_SIZE")
+	_ = config.BindEnv("indexer.verifyBatchSize", "VERIFY_BATCH_SIZE")
+	_ = config.BindEnv("indexer.confirmations", "CONFIRMATIONS")
+	_ = config.BindEnv("indexer.tailRescanDepth", "TAIL_RESCAN_DEPTH")
 	_ = config.BindEnv("log.level", "LOG_LEVEL")
 
 	if err := config.Unmarshal(cfg); err != nil {
@@ -103,7 +112,13 @@ func LoadConfig() (*Config, error) {
 		cfg.Indexer.ContractSyncInterval = time.Second
 	}
 	if cfg.Indexer.BatchSize == 0 {
-		cfg.Indexer.BatchSize = 2000
+		cfg.Indexer.BatchSize = 50
+	}
+	if cfg.Indexer.VerifyBatchSize == 0 {
+		cfg.Indexer.VerifyBatchSize = cfg.Indexer.BatchSize
+	}
+	if cfg.Indexer.TailRescanDepth == 0 {
+		cfg.Indexer.TailRescanDepth = cfg.Indexer.VerifyBatchSize
 	}
 	if cfg.DB.Path == "" {
 		cfg.DB.Path = "data"

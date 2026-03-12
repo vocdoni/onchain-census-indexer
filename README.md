@@ -7,6 +7,8 @@ A Go service that indexes the `WeightChanged` event from multiple contracts (acr
 - Indexes `WeightChanged(account, previousWeight, newWeight)` from one or more contracts.
 - Supports multiple chains in the same process.
 - Persists events locally with resume support per contract.
+- Verifies indexed ranges with a second pass before marking them synced.
+- Continuously rescans a rolling tail window to recover late or previously missed events.
 - Serves GraphQL per contract at `/{chainID}/{contractAddress}/graphql`.
 - Serves the same indexed event data as JSON at `/{chainID}/{contractAddress}`.
 - Root `/` shows a JSON list of available GraphQL and JSON endpoints plus sync status per contract.
@@ -190,6 +192,9 @@ Flags override environment variables. Defaults shown where available.
 | `--indexer.pollInterval` | `POLL_INTERVAL` | `5s` | Event polling interval |
 | `--indexer.contractSyncInterval` | `CONTRACT_SYNC_INTERVAL` | `1s` | Contract reconciliation and expiration purge interval |
 | `--indexer.batchSize` | `BATCH_SIZE` | `2000` | Log batch size |
+| `--indexer.verifyBatchSize` | `VERIFY_BATCH_SIZE` | `indexer.batchSize` | Verification and tail-rescan batch size |
+| `--indexer.confirmations` | `CONFIRMATIONS` | `12` | Number of tip blocks excluded from verification/sync status |
+| `--indexer.tailRescanDepth` | `TAIL_RESCAN_DEPTH` | `indexer.verifyBatchSize` | Depth of the verified tail window continuously rescanned |
 | `--log.level` | `LOG_LEVEL` | `debug` | Log level |
 
 Notes:
@@ -199,6 +204,7 @@ Notes:
 - New contracts registered via `POST /contracts` are persisted in the DB and picked up by the indexer on the next contract sync interval (uses `indexer.contractSyncInterval`).
 - If a contract is saved with `startBlock: 0` (or omitted in `POST /contracts`), the indexer calculates the contract creation block on first registration and persists it in the DB.
 - `expiresAt` is required. The contract remains available until that timestamp (RFC3339). After expiration, the contract metadata, sync state, and indexed events are purged from the DB, and the store is compacted to reclaim disk space.
+- The indexer performs a first pass, a verification pass, and then rolling tail rescans. `info.synced` becomes `true` only when verified progress reaches `head - confirmations`.
 
 ## Local usage
 
@@ -257,6 +263,7 @@ docker compose up -d
 ```
 
 The indexer will be served through Traefik at `https://$DOMAIN`.
+The dev indexer will be served through Traefik at `https://dev.$DOMAIN`.
 
 ### Build and run
 
@@ -279,5 +286,6 @@ docker run --rm -p 8080:8080 \
 
 - RPC endpoints must cover every chain ID listed in `CONTRACTS`.
 - The indexer stores the last indexed block per contract to resume safely on restart.
+- The indexer also stores verified progress per contract and keeps rescanning the recent verified tail to repair incomplete RPC responses.
 - `BigInt` values are serialized as strings in GraphQL responses.
 - Ordering by `blockNumber` follows storage order (chain ID + contract + block number).

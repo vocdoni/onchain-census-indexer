@@ -26,6 +26,7 @@ import (
 type Service struct {
 	store             *store.Store
 	chainHeadResolver chainHeadResolver
+	syncConfirmations uint64
 	mu                sync.RWMutex
 	handlers          map[string]*handler.Handler
 	contracts         []indexer.ContractInfo
@@ -51,7 +52,7 @@ func (r *rpcChainHeadResolver) HeadBlock(ctx context.Context, chainID uint64) (u
 }
 
 // New creates a new API service.
-func New(eventStore *store.Store, pool *rpc.Web3Pool) (*Service, error) {
+func New(eventStore *store.Store, pool *rpc.Web3Pool, syncConfirmations uint64) (*Service, error) {
 	if eventStore == nil {
 		return nil, fmt.Errorf("store is required")
 	}
@@ -62,6 +63,7 @@ func New(eventStore *store.Store, pool *rpc.Web3Pool) (*Service, error) {
 	return &Service{
 		store:             eventStore,
 		chainHeadResolver: resolver,
+		syncConfirmations: syncConfirmations,
 		handlers:          make(map[string]*handler.Handler),
 	}, nil
 }
@@ -569,7 +571,7 @@ func (s *Service) contractsWithSyncStatus(ctx context.Context) []indexer.Contrac
 	}
 	heads := make(map[uint64]chainHead, len(contracts))
 	for i := range contracts {
-		lastBlock, ok, err := s.store.LastIndexedBlock(ctx, contracts[i].ChainID, contracts[i].Address)
+		verifiedBlock, ok, err := s.store.LastVerifiedBlock(ctx, contracts[i].ChainID, contracts[i].Address)
 		if err != nil || !ok {
 			contracts[i].Synced = false
 			continue
@@ -588,7 +590,22 @@ func (s *Service) contractsWithSyncStatus(ctx context.Context) []indexer.Contrac
 			heads[contracts[i].ChainID] = head
 		}
 
-		contracts[i].Synced = head.err == nil && lastBlock >= head.head
+		if head.err != nil {
+			contracts[i].Synced = false
+			continue
+		}
+		safeHead, ok := safeHead(head.head, s.syncConfirmations)
+		contracts[i].Synced = ok && verifiedBlock >= safeHead
 	}
 	return contracts
+}
+
+func safeHead(head, confirmations uint64) (uint64, bool) {
+	if confirmations == 0 {
+		return head, true
+	}
+	if head < confirmations {
+		return 0, false
+	}
+	return head - confirmations, true
 }

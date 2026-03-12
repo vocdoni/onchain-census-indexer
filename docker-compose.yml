@@ -45,6 +45,39 @@ services:
       - traefik.http.services.onchain-census-indexer.loadbalancer.server.port=${LISTEN_PORT:-8080}
       - com.centurylinklabs.watchtower.enable=true
 
+  onchain-census-indexer-dev:
+    image: ghcr.io/vocdoni/onchain-census-indexer:${TAG:-latest}
+    container_name: onchain-census-indexer-dev
+    env_file:
+      - .env
+    environment:
+      CONTRACTS: ${DEV_CONTRACTS:-}
+      RPCS: ${DEV_RPCS:-}
+      DB_PATH: /data
+      LISTEN_ADDR: ${DEV_LISTEN_ADDR:-0.0.0.0}
+      LISTEN_PORT: ${DEV_LISTEN_PORT:-8080}
+      CORS_ALLOWED_ORIGINS: ${DEV_CORS_ALLOWED_ORIGINS:-*}
+      POLL_INTERVAL: ${DEV_POLL_INTERVAL:-5s}
+      CONTRACT_SYNC_INTERVAL: ${DEV_CONTRACT_SYNC_INTERVAL:-1s}
+      BATCH_SIZE: ${DEV_BATCH_SIZE:-50}
+      VERIFY_BATCH_SIZE: ${DEV_VERIFY_BATCH_SIZE:-0}
+      CONFIRMATIONS: ${DEV_CONFIRMATIONS:-12}
+      TAIL_RESCAN_DEPTH: ${DEV_TAIL_RESCAN_DEPTH:-0}
+      LOG_LEVEL: ${DEV_LOG_LEVEL:-debug}
+    volumes:
+      - ./data-dev:/data
+    networks:
+      - proxy
+    restart: ${RESTART:-unless-stopped}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.onchain-census-indexer-dev.rule=Host(`dev.${DOMAIN:-indexer.example.com}`)
+      - traefik.http.routers.onchain-census-indexer-dev.entrypoints=websecure
+      - traefik.http.routers.onchain-census-indexer-dev.tls=true
+      - traefik.http.routers.onchain-census-indexer-dev.tls.certresolver=letsencrypt
+      - traefik.http.services.onchain-census-indexer-dev.loadbalancer.server.port=${DEV_LISTEN_PORT:-8080}
+      - com.centurylinklabs.watchtower.enable=false
+
   watchtower:
     image: nickfedor/watchtower:latest
     container_name: watchtower
@@ -62,6 +95,7 @@ services:
       - com.centurylinklabs.watchtower.enable=true
     depends_on:
       - onchain-census-indexer
+      - onchain-census-indexer-dev
 
 networks:
   proxy:

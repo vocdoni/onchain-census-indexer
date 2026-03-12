@@ -173,6 +173,61 @@ func TestHandleRootIncludesSyncedStatus(t *testing.T) {
 	}
 }
 
+func TestContractsWithSyncStatusUsesVerifiedBlockAndConfirmations(t *testing.T) {
+	ctx := context.Background()
+	database, err := metadb.New(db.TypeInMem, "")
+	if err != nil {
+		t.Fatalf("create in-memory db: %v", err)
+	}
+	defer func() {
+		if cerr := database.Close(); cerr != nil {
+			t.Fatalf("close db: %v", cerr)
+		}
+	}()
+	eventStore := store.New(database)
+
+	contract := common.HexToAddress("0x9898989898989898989898989898989898989898")
+	expiresAt := futureTime(24 * time.Hour)
+	if err := eventStore.SaveContract(ctx, 1, contract, 1, expiresAt); err != nil {
+		t.Fatalf("save contract: %v", err)
+	}
+	if err := eventStore.SetIndexedBlock(ctx, 1, contract, 100); err != nil {
+		t.Fatalf("set indexed block: %v", err)
+	}
+	if err := eventStore.SetVerifiedBlock(ctx, 1, contract, 90); err != nil {
+		t.Fatalf("set verified block: %v", err)
+	}
+
+	svc := &Service{
+		store:             eventStore,
+		chainHeadResolver: stubHeadResolver{heads: map[uint64]uint64{1: 100}},
+		syncConfirmations: 10,
+		handlers:          make(map[string]*handler.Handler),
+		contracts: []indexer.ContractInfo{
+			{ChainID: 1, Address: contract, StartBlock: 1},
+		},
+	}
+
+	contracts := svc.contractsWithSyncStatus(ctx)
+	if len(contracts) != 1 {
+		t.Fatalf("expected 1 contract, got %d", len(contracts))
+	}
+	if !contracts[0].Synced {
+		t.Fatalf("expected contract to be synced when verified block satisfies safe head")
+	}
+
+	if err := eventStore.SetVerifiedBlock(ctx, 1, contract, 89); err != nil {
+		t.Fatalf("set verified block below safe head: %v", err)
+	}
+	contracts = svc.contractsWithSyncStatus(ctx)
+	if len(contracts) != 1 {
+		t.Fatalf("expected 1 contract after lowering verified block, got %d", len(contracts))
+	}
+	if contracts[0].Synced {
+		t.Fatalf("expected contract to be unsynced when verified block is below safe head")
+	}
+}
+
 func TestHandleRootServesContractJSON(t *testing.T) {
 	ctx := context.Background()
 	database, err := metadb.New(db.TypeInMem, "")
@@ -216,7 +271,7 @@ func TestHandleRootServesContractJSON(t *testing.T) {
 		t.Fatalf("save events: %v", err)
 	}
 
-	svc, err := New(eventStore, nil)
+	svc, err := New(eventStore, nil, 0)
 	if err != nil {
 		t.Fatalf("create api service: %v", err)
 	}
@@ -270,7 +325,7 @@ func TestHandleRootContractJSONRejectsInvalidQuery(t *testing.T) {
 		t.Fatalf("save contract: %v", err)
 	}
 
-	svc, err := New(eventStore, nil)
+	svc, err := New(eventStore, nil, 0)
 	if err != nil {
 		t.Fatalf("create api service: %v", err)
 	}
@@ -349,7 +404,7 @@ func TestSyncFromStorePrunesRemovedContracts(t *testing.T) {
 		t.Fatalf("save contract B: %v", err)
 	}
 
-	svc, err := New(eventStore, nil)
+	svc, err := New(eventStore, nil, 0)
 	if err != nil {
 		t.Fatalf("create api service: %v", err)
 	}
@@ -391,7 +446,7 @@ func TestHandleContractsRejectsExpiredContract(t *testing.T) {
 		}
 	}()
 	eventStore := store.New(database)
-	svc, err := New(eventStore, nil)
+	svc, err := New(eventStore, nil, 0)
 	if err != nil {
 		t.Fatalf("create api service: %v", err)
 	}
@@ -419,7 +474,7 @@ func TestHandleContractsRejectsMissingExpiresAt(t *testing.T) {
 		}
 	}()
 	eventStore := store.New(database)
-	svc, err := New(eventStore, nil)
+	svc, err := New(eventStore, nil, 0)
 	if err != nil {
 		t.Fatalf("create api service: %v", err)
 	}

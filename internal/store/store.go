@@ -16,6 +16,7 @@ import (
 const (
 	eventKeyPrefix       = "evt:"
 	lastBlockKeyPrefix   = "meta:last_block:"
+	verifiedBlockKeyPref = "meta:verified_block:"
 	contractKeyPrefix    = "meta:contract:"
 	contractAddressBytes = 20
 )
@@ -36,6 +37,12 @@ type Store struct {
 	db db.Database
 }
 
+// ReplaceOptions controls which progress cursors are updated when replacing a range.
+type ReplaceOptions struct {
+	IndexedUntil  *uint64
+	VerifiedUntil *uint64
+}
+
 // New returns a new Store backed by the provided database.
 func New(database db.Database) *Store {
 	return &Store{db: database}
@@ -43,19 +50,28 @@ func New(database db.Database) *Store {
 
 // LastIndexedBlock returns the last indexed block number if present.
 func (s *Store) LastIndexedBlock(ctx context.Context, chainID uint64, contract common.Address) (uint64, bool, error) {
+	return s.progressBlock(ctx, lastBlockKey(chainID, contract), "last indexed block")
+}
+
+// LastVerifiedBlock returns the last verified block number if present.
+func (s *Store) LastVerifiedBlock(ctx context.Context, chainID uint64, contract common.Address) (uint64, bool, error) {
+	return s.progressBlock(ctx, verifiedBlockKey(chainID, contract), "last verified block")
+}
+
+func (s *Store) progressBlock(ctx context.Context, key []byte, label string) (uint64, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
 	}
-	data, err := s.db.Get(lastBlockKey(chainID, contract))
+	data, err := s.db.Get(key)
 	if err != nil {
 		if errors.Is(err, db.ErrKeyNotFound) {
 			return 0, false, nil
 		}
-		return 0, false, fmt.Errorf("get last indexed block: %w", err)
+		return 0, false, fmt.Errorf("get %s: %w", label, err)
 	}
 	block, err := decodeUint64(data)
 	if err != nil {
-		return 0, false, fmt.Errorf("decode last indexed block: %w", err)
+		return 0, false, fmt.Errorf("decode %s: %w", label, err)
 	}
 	return block, true, nil
 }
@@ -94,11 +110,103 @@ func (s *Store) SaveEvents(ctx context.Context, chainID uint64, contract common.
 			return fmt.Errorf("store event: %w", err)
 		}
 	}
-	if err := tx.Set(lastBlockKey(chainID, contract), encodeUint64(lastIndexedBlock)); err != nil {
-		return fmt.Errorf("store last indexed block: %w", err)
+	if err := s.setProgressBlocks(tx, chainID, contract, ReplaceOptions{
+		IndexedUntil:  &lastIndexedBlock,
+		VerifiedUntil: &lastIndexedBlock,
+	}); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit events: %w", err)
+	}
+	return nil
+}
+
+// SetIndexedBlock persists the last indexed block for a contract.
+func (s *Store) SetIndexedBlock(ctx context.Context, chainID uint64, contract common.Address, block uint64) error {
+	return s.setProgressBlock(ctx, lastBlockKey(chainID, contract), block, "indexed")
+}
+
+// SetVerifiedBlock persists the last verified block for a contract.
+func (s *Store) SetVerifiedBlock(ctx context.Context, chainID uint64, contract common.Address, block uint64) error {
+	return s.setProgressBlock(ctx, verifiedBlockKey(chainID, contract), block, "verified")
+}
+
+func (s *Store) setProgressBlock(ctx context.Context, key []byte, block uint64, label string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	tx := s.db.WriteTx()
+	defer tx.Discard()
+	if err := tx.Set(key, encodeUint64(block)); err != nil {
+		return fmt.Errorf("store %s block: %w", label, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit %s block: %w", label, err)
+	}
+	return nil
+}
+
+// ReplaceEventsInRange atomically rewrites all events in the inclusive block range and
+// optionally updates indexed and/or verified progress cursors.
+func (s *Store) ReplaceEventsInRange(
+	ctx context.Context,
+	chainID uint64,
+	contract common.Address,
+	from, to uint64,
+	events []Event,
+	opts ReplaceOptions,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if chainID == 0 {
+		return fmt.Errorf("chainID is required")
+	}
+	if contract == (common.Address{}) {
+		return fmt.Errorf("contract address is required")
+	}
+	if from > to {
+		return fmt.Errorf("from block must be less than or equal to to block")
+	}
+
+	keys, err := s.eventKeysInRange(ctx, chainID, contract, from, to)
+	if err != nil {
+		return err
+	}
+
+	tx := s.db.WriteTx()
+	defer tx.Discard()
+
+	for _, key := range keys {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := tx.Delete(key); err != nil {
+			return fmt.Errorf("delete event in range: %w", err)
+		}
+	}
+	for _, event := range events {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := validateEventForRange(event, chainID, contract, from, to); err != nil {
+			return err
+		}
+		key := eventKey(event.ChainID, contract, event.BlockNumber, event.LogIndex)
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return fmt.Errorf("marshal event: %w", err)
+		}
+		if err := tx.Set(key, payload); err != nil {
+			return fmt.Errorf("store event in range: %w", err)
+		}
+	}
+	if err := s.setProgressBlocks(tx, chainID, contract, opts); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit range replacement: %w", err)
 	}
 	return nil
 }
@@ -290,6 +398,9 @@ func (s *Store) DeleteContractData(ctx context.Context, chainID uint64, contract
 	}
 	if err := tx.Delete(lastBlockKey(chainID, contract)); err != nil {
 		return fmt.Errorf("delete last indexed block: %w", err)
+	}
+	if err := tx.Delete(verifiedBlockKey(chainID, contract)); err != nil {
+		return fmt.Errorf("delete last verified block: %w", err)
 	}
 	if err := tx.Delete(contractKey(chainID, contract)); err != nil {
 		return fmt.Errorf("delete contract: %w", err)
@@ -489,6 +600,16 @@ func lastBlockKey(chainID uint64, contract common.Address) []byte {
 	return key
 }
 
+func verifiedBlockKey(chainID uint64, contract common.Address) []byte {
+	key := make([]byte, len(verifiedBlockKeyPref)+8+contractAddressBytes)
+	copy(key, verifiedBlockKeyPref)
+	offset := len(verifiedBlockKeyPref)
+	binary.BigEndian.PutUint64(key[offset:], chainID)
+	offset += 8
+	copy(key[offset:], contract.Bytes())
+	return key
+}
+
 // ContractRecord represents a stored contract configuration.
 type ContractRecord struct {
 	ChainID    uint64    `json:"chainId"`
@@ -505,4 +626,73 @@ func contractKey(chainID uint64, contract common.Address) []byte {
 	offset += 8
 	copy(key[offset:], contract.Bytes())
 	return key
+}
+
+func (s *Store) eventKeysInRange(ctx context.Context, chainID uint64, contract common.Address, from, to uint64) ([][]byte, error) {
+	prefix := eventPrefix(chainID, contract)
+	keys := make([][]byte, 0)
+	var iterErr error
+	err := s.db.Iterate(prefix, func(key, _ []byte) bool {
+		if err := ctx.Err(); err != nil {
+			iterErr = err
+			return false
+		}
+		fullKey := fullIteratedKey(prefix, key)
+		blockNumber, err := eventBlockNumber(fullKey)
+		if err != nil {
+			iterErr = err
+			return false
+		}
+		if blockNumber < from || blockNumber > to {
+			return true
+		}
+		keys = append(keys, fullKey)
+		return true
+	})
+	if iterErr != nil {
+		return nil, iterErr
+	}
+	if err != nil {
+		return nil, fmt.Errorf("iterate contract events in range: %w", err)
+	}
+	return keys, nil
+}
+
+func eventBlockNumber(key []byte) (uint64, error) {
+	expectedLen := len(eventKeyPrefix) + 8 + contractAddressBytes + 8 + 4
+	if len(key) != expectedLen {
+		return 0, fmt.Errorf("invalid event key length: %d", len(key))
+	}
+	offset := len(eventKeyPrefix) + 8 + contractAddressBytes
+	return binary.BigEndian.Uint64(key[offset : offset+8]), nil
+}
+
+func validateEventForRange(event Event, chainID uint64, contract common.Address, from, to uint64) error {
+	if event.ChainID != chainID {
+		return fmt.Errorf("event chainID mismatch")
+	}
+	if !common.IsHexAddress(event.Contract) {
+		return fmt.Errorf("event contract is invalid")
+	}
+	if common.HexToAddress(event.Contract) != contract {
+		return fmt.Errorf("event contract mismatch")
+	}
+	if event.BlockNumber < from || event.BlockNumber > to {
+		return fmt.Errorf("event block %d outside replace range [%d,%d]", event.BlockNumber, from, to)
+	}
+	return nil
+}
+
+func (s *Store) setProgressBlocks(tx db.WriteTx, chainID uint64, contract common.Address, opts ReplaceOptions) error {
+	if opts.IndexedUntil != nil {
+		if err := tx.Set(lastBlockKey(chainID, contract), encodeUint64(*opts.IndexedUntil)); err != nil {
+			return fmt.Errorf("store last indexed block: %w", err)
+		}
+	}
+	if opts.VerifiedUntil != nil {
+		if err := tx.Set(verifiedBlockKey(chainID, contract), encodeUint64(*opts.VerifiedUntil)); err != nil {
+			return fmt.Errorf("store last verified block: %w", err)
+		}
+	}
+	return nil
 }
