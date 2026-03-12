@@ -8,7 +8,8 @@ A Go service that indexes the `WeightChanged` event from multiple contracts (acr
 - Supports multiple chains in the same process.
 - Persists events locally with resume support per contract.
 - Serves GraphQL per contract at `/{chainID}/{contractAddress}/graphql`.
-- Root `/` shows a JSON list of available GraphQL endpoints and sync status per contract.
+- Serves the same indexed event data as JSON at `/{chainID}/{contractAddress}`.
+- Root `/` shows a JSON list of available GraphQL and JSON endpoints plus sync status per contract.
 
 ## Architecture
 
@@ -44,7 +45,8 @@ Each entry defines:
 
 ## GraphQL
 
-**Endpoint:** `http://localhost:8080/{chainID}/{contractAddress}/graphql`  
+**GraphQL endpoint:** `http://localhost:8080/{chainID}/{contractAddress}/graphql`  
+**JSON endpoint:** `http://localhost:8080/{chainID}/{contractAddress}`  
 **Health check:** `http://localhost:8080/healthz`  
 **Root listing:** `http://localhost:8080/` (includes `info.synced`)
 
@@ -68,7 +70,8 @@ Example response:
       "expiresAt": "2026-03-01T12:00:00Z",
       "synced": true
     },
-    "endpoint": "/11155111/0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29/graphql"
+    "endpoint": "/11155111/0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29/graphql",
+    "jsonEndpoint": "/11155111/0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29"
   }
 ]
 ```
@@ -94,7 +97,40 @@ Response:
   "chainId": 11155111,
   "contract": "0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29",
   "endpoint": "/11155111/0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29/graphql",
+  "jsonEndpoint": "/11155111/0x2E6C3D4ED7dA2bAD613A3Ea30961db7bF8452b29",
   "expiresAt": "2026-03-01T12:00:00Z"
+}
+```
+
+### JSON endpoint
+
+Request:
+
+```
+GET /{chainID}/{contractAddress}?first=100&skip=0&orderBy=blockNumber&orderDirection=asc
+```
+
+Query params:
+
+- `first`: optional non-negative integer. If omitted or `0`, returns all stored events for the contract.
+- `skip`: optional non-negative integer. Defaults to `0`.
+- `orderBy`: optional. Only `blockNumber` is supported.
+- `orderDirection`: optional. `asc` or `desc` (defaults to `asc`).
+
+Example response:
+
+```
+{
+  "weightChangeEvents": [
+    {
+      "account": {
+        "id": "0x1111111111111111111111111111111111111111"
+      },
+      "previousWeight": "10",
+      "newWeight": "15",
+      "blockNumber": "123456"
+    }
+  ]
 }
 ```
 

@@ -310,10 +310,26 @@ func (s *Service) routes() http.Handler {
 type registerRequest = indexer.ContractInfo
 
 type registerResponse struct {
-	ChainID   uint64    `json:"chainId"`
-	Contract  string    `json:"contract"`
-	Endpoint  string    `json:"endpoint"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	ChainID      uint64    `json:"chainId"`
+	Contract     string    `json:"contract"`
+	Endpoint     string    `json:"endpoint"`
+	JSONEndpoint string    `json:"jsonEndpoint,omitempty"`
+	ExpiresAt    time.Time `json:"expiresAt"`
+}
+
+type weightChangeAccountResponse struct {
+	ID string `json:"id"`
+}
+
+type weightChangeEventResponse struct {
+	Account        weightChangeAccountResponse `json:"account"`
+	PreviousWeight string                      `json:"previousWeight"`
+	NewWeight      string                      `json:"newWeight"`
+	BlockNumber    string                      `json:"blockNumber"`
+}
+
+type weightChangeEventsResponse struct {
+	WeightChangeEvents []weightChangeEventResponse `json:"weightChangeEvents"`
 }
 
 func (s *Service) handleContracts(w http.ResponseWriter, r *http.Request) {
@@ -342,10 +358,11 @@ func (s *Service) handleContracts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := registerResponse{
-		ChainID:   req.ChainID,
-		Contract:  contractAddr.Hex(),
-		Endpoint:  fmt.Sprintf("/%d/%s/graphql", req.ChainID, contractAddr.Hex()),
-		ExpiresAt: req.ExpiresAt,
+		ChainID:      req.ChainID,
+		Contract:     contractAddr.Hex(),
+		Endpoint:     fmt.Sprintf("/%d/%s/graphql", req.ChainID, contractAddr.Hex()),
+		JSONEndpoint: fmt.Sprintf("/%d/%s", req.ChainID, contractAddr.Hex()),
+		ExpiresAt:    req.ExpiresAt,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -363,12 +380,14 @@ func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {
 		type APIInfo struct {
 			indexer.ContractInfo `json:"info"`
 			Endpoint             string `json:"endpoint"`
+			JSONEndpoint         string `json:"jsonEndpoint"`
 		}
 		var apiInfo []APIInfo
 		for _, spec := range s.contractsWithSyncStatus(r.Context()) {
 			apiInfo = append(apiInfo, APIInfo{
 				ContractInfo: spec,
 				Endpoint:     fmt.Sprintf("/%d/%s/graphql", spec.ChainID, spec.Address.Hex()),
+				JSONEndpoint: fmt.Sprintf("/%d/%s", spec.ChainID, spec.Address.Hex()),
 			})
 		}
 		if err := json.NewEncoder(w).Encode(apiInfo); err != nil {
@@ -377,21 +396,15 @@ func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(path, "/")
-	if len(parts) != 3 || parts[2] != "graphql" {
+	if len(parts) != 2 && (len(parts) != 3 || parts[2] != "graphql") {
 		http.NotFound(w, r)
 		return
 	}
-	chainID, err := strconv.ParseUint(parts[0], 10, 64)
-	if err != nil || chainID == 0 {
+	chainID, contractAddr, key, ok := parseContractRoute(parts)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	contract := strings.ToLower(parts[1])
-	if !common.IsHexAddress(contract) {
-		http.NotFound(w, r)
-		return
-	}
-	key := fmt.Sprintf("%d:%s", chainID, strings.ToLower(common.HexToAddress(contract).Hex()))
 
 	s.mu.RLock()
 	graphqlHandler, ok := s.handlers[key]
@@ -400,7 +413,104 @@ func (s *Service) handleRoot(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if len(parts) == 2 {
+		s.handleContractJSON(w, r, chainID, contractAddr)
+		return
+	}
 	graphqlHandler.ServeHTTP(w, r)
+}
+
+func parseContractRoute(parts []string) (uint64, common.Address, string, bool) {
+	if len(parts) < 2 {
+		return 0, common.Address{}, "", false
+	}
+	chainID, err := strconv.ParseUint(parts[0], 10, 64)
+	if err != nil || chainID == 0 {
+		return 0, common.Address{}, "", false
+	}
+	contract := strings.TrimSpace(parts[1])
+	if !common.IsHexAddress(contract) {
+		return 0, common.Address{}, "", false
+	}
+	contractAddr := common.HexToAddress(contract)
+	return chainID, contractAddr, fmt.Sprintf("%d:%s", chainID, strings.ToLower(contractAddr.Hex())), true
+}
+
+func (s *Service) handleContractJSON(w http.ResponseWriter, r *http.Request, chainID uint64, contract common.Address) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	opts, err := listOptionsFromRequest(r, chainID, contract)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	events, err := s.store.ListEvents(r.Context(), opts)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := weightChangeEventsResponse{
+		WeightChangeEvents: make([]weightChangeEventResponse, 0, len(events)),
+	}
+	for _, event := range events {
+		resp.WeightChangeEvents = append(resp.WeightChangeEvents, weightChangeEventResponse{
+			Account: weightChangeAccountResponse{
+				ID: event.Account,
+			},
+			PreviousWeight: event.PreviousWeight,
+			NewWeight:      event.NewWeight,
+			BlockNumber:    strconv.FormatUint(event.BlockNumber, 10),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func listOptionsFromRequest(r *http.Request, chainID uint64, contract common.Address) (store.ListOptions, error) {
+	first, err := parseOptionalNonNegativeInt(r.URL.Query().Get("first"), "first")
+	if err != nil {
+		return store.ListOptions{}, err
+	}
+	skip, err := parseOptionalNonNegativeInt(r.URL.Query().Get("skip"), "skip")
+	if err != nil {
+		return store.ListOptions{}, err
+	}
+	orderBy := strings.TrimSpace(r.URL.Query().Get("orderBy"))
+	if orderBy != "" && orderBy != "blockNumber" {
+		return store.ListOptions{}, fmt.Errorf("unsupported orderBy: %s", orderBy)
+	}
+	orderDirection := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("orderDirection")))
+	if orderDirection != "" && orderDirection != "asc" && orderDirection != "desc" {
+		return store.ListOptions{}, fmt.Errorf("unsupported orderDirection: %s", orderDirection)
+	}
+	return store.ListOptions{
+		First:          first,
+		Skip:           skip,
+		OrderBy:        orderBy,
+		OrderDirection: orderDirection,
+		ChainID:        chainID,
+		Contract:       contract,
+	}, nil
+}
+
+func parseOptionalNonNegativeInt(raw, name string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", name)
+	}
+	return value, nil
 }
 
 func (s *Service) sortedContracts() []indexer.ContractInfo {

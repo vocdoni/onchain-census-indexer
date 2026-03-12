@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -147,6 +148,7 @@ func TestHandleRootIncludesSyncedStatus(t *testing.T) {
 			ChainID uint64 `json:"chainId"`
 			Synced  bool   `json:"synced"`
 		} `json:"info"`
+		JSONEndpoint string `json:"jsonEndpoint"`
 	}
 	var body []apiInfo
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -158,6 +160,9 @@ func TestHandleRootIncludesSyncedStatus(t *testing.T) {
 
 	got := map[uint64]bool{}
 	for _, item := range body {
+		if item.JSONEndpoint == "" {
+			t.Fatalf("expected jsonEndpoint to be populated for chain %d", item.Info.ChainID)
+		}
 		got[item.Info.ChainID] = item.Info.Synced
 	}
 	if !got[1] {
@@ -165,6 +170,120 @@ func TestHandleRootIncludesSyncedStatus(t *testing.T) {
 	}
 	if got[2] {
 		t.Fatalf("expected chain 2 to be unsynced")
+	}
+}
+
+func TestHandleRootServesContractJSON(t *testing.T) {
+	ctx := context.Background()
+	database, err := metadb.New(db.TypeInMem, "")
+	if err != nil {
+		t.Fatalf("create in-memory db: %v", err)
+	}
+	defer func() {
+		if cerr := database.Close(); cerr != nil {
+			t.Fatalf("close db: %v", cerr)
+		}
+	}()
+	eventStore := store.New(database)
+
+	contract := common.HexToAddress("0x3333333333333333333333333333333333333333")
+	accountA := common.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	accountB := common.HexToAddress("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	expiresAt := futureTime(24 * time.Hour)
+	if err := eventStore.SaveContract(ctx, 1, contract, 1, expiresAt); err != nil {
+		t.Fatalf("save contract: %v", err)
+	}
+	if err := eventStore.SaveEvents(ctx, 1, contract, []store.Event{
+		{
+			ChainID:        1,
+			Contract:       contract.Hex(),
+			Account:        accountA.Hex(),
+			PreviousWeight: "1",
+			NewWeight:      "2",
+			BlockNumber:    10,
+			LogIndex:       0,
+		},
+		{
+			ChainID:        1,
+			Contract:       contract.Hex(),
+			Account:        accountB.Hex(),
+			PreviousWeight: "2",
+			NewWeight:      "5",
+			BlockNumber:    11,
+			LogIndex:       0,
+		},
+	}, 11); err != nil {
+		t.Fatalf("save events: %v", err)
+	}
+
+	svc, err := New(eventStore, nil)
+	if err != nil {
+		t.Fatalf("create api service: %v", err)
+	}
+	if err := svc.SyncFromStore(ctx); err != nil {
+		t.Fatalf("sync from store: %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		fmt.Sprintf("/1/%s?first=1&skip=1&orderDirection=desc", contract.Hex()),
+		nil,
+	)
+	rec := httptest.NewRecorder()
+	svc.handleRoot(rec, req.WithContext(ctx))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d (body=%s)", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected application/json content type, got %q", got)
+	}
+
+	var body weightChangeEventsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(body.WeightChangeEvents) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(body.WeightChangeEvents))
+	}
+	if got := body.WeightChangeEvents[0]; got.Account.ID != accountA.Hex() || got.PreviousWeight != "1" || got.NewWeight != "2" || got.BlockNumber != "10" {
+		t.Fatalf("unexpected event payload: %+v", got)
+	}
+}
+
+func TestHandleRootContractJSONRejectsInvalidQuery(t *testing.T) {
+	ctx := context.Background()
+	database, err := metadb.New(db.TypeInMem, "")
+	if err != nil {
+		t.Fatalf("create in-memory db: %v", err)
+	}
+	defer func() {
+		if cerr := database.Close(); cerr != nil {
+			t.Fatalf("close db: %v", cerr)
+		}
+	}()
+	eventStore := store.New(database)
+
+	contract := common.HexToAddress("0x4444444444444444444444444444444444444444")
+	expiresAt := futureTime(24 * time.Hour)
+	if err := eventStore.SaveContract(ctx, 1, contract, 1, expiresAt); err != nil {
+		t.Fatalf("save contract: %v", err)
+	}
+
+	svc, err := New(eventStore, nil)
+	if err != nil {
+		t.Fatalf("create api service: %v", err)
+	}
+	if err := svc.SyncFromStore(ctx); err != nil {
+		t.Fatalf("sync from store: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/1/%s?first=-1", contract.Hex()), nil)
+	rec := httptest.NewRecorder()
+	svc.handleRoot(rec, req.WithContext(ctx))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d (body=%s)", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
 }
 

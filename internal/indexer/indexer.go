@@ -135,10 +135,7 @@ func (i *Indexer) syncOnce(ctx context.Context, lastBlock *uint64) error {
 			return err
 		}
 		from := *lastBlock + 1
-		to := from + i.batchSize - 1
-		if to > head {
-			to = head
-		}
+		to := min(from+i.batchSize-1, head)
 		log.Debugw("fetching logs batch", "from", from, "to", to)
 		events, err := i.fetchEvents(ctx, from, to)
 		if err != nil {
