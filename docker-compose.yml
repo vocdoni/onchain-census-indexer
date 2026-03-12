@@ -53,11 +53,15 @@ services:
       - --label-enable
       - --interval
       - "${WATCHTOWER_INTERVAL:-300}"
+      - --include-stopped 
+      - --revive-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: ${RESTART:-unless-stopped}
     labels:
       - com.centurylinklabs.watchtower.enable=true
+    depends_on:
+      - onchain-census-indexer
 
 networks:
   proxy:
