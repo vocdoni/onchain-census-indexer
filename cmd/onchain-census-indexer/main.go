@@ -29,7 +29,8 @@ func main() {
 		log.Fatal(err.Error())
 	}
 
-	log.Infow("starting onchain census indexer",
+	log.Infow(
+		"starting onchain census indexer",
 		"contracts", cfg.ContractsRaw,
 		"dbPath", cfg.DB.Path,
 		"listen", cfg.HTTP.ListenAddr,

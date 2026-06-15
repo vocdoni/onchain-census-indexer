@@ -112,7 +112,8 @@ func (i *Indexer) Run(ctx context.Context) error {
 		return err
 	}
 
-	log.Infow("indexer starting",
+	log.Infow(
+		"indexer starting",
 		"chainID", i.chainID,
 		"contract", i.contract.Hex(),
 		"startBlock", i.startBlock,
@@ -179,7 +180,8 @@ func (i *Indexer) syncOnce(ctx context.Context, state *progressState) error {
 		return fmt.Errorf("%w: fetch head block: %v", errRetryable, err)
 	}
 	safeHead, hasSafeHead := i.safeHead(head)
-	log.Debugw("head block fetched",
+	log.Debugw(
+		"head block fetched",
 		"head", head,
 		"safeHead", safeHead,
 		"indexedUntil", state.indexedUntil,

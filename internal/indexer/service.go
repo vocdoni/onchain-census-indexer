@@ -246,7 +246,8 @@ func (s *Service) ensureRegistered(ctx context.Context, cfg ContractInfo, errCh 
 		if err := s.store.SetContractStartBlock(ctx, cfg.ChainID, cfg.Address, cfg.StartBlock); err != nil {
 			return fmt.Errorf("persist start block for chainID %d contract %s: %w", cfg.ChainID, cfg.Address.Hex(), err)
 		}
-		log.Infow("calculated and persisted contract start block",
+		log.Infow(
+			"calculated and persisted contract start block",
 			"chainID", cfg.ChainID,
 			"contract", cfg.Address.Hex(),
 			"startBlock", cfg.StartBlock,
@@ -321,7 +322,8 @@ func (s *Service) purgeContract(ctx context.Context, cfg ContractInfo) error {
 	if err := s.store.DeleteContractData(ctx, cfg.ChainID, cfg.Address); err != nil {
 		return fmt.Errorf("purge contract data for chainID %d contract %s: %w", cfg.ChainID, cfg.Address.Hex(), err)
 	}
-	log.Infow("purged expired contract",
+	log.Infow(
+		"purged expired contract",
 		"chainID", cfg.ChainID,
 		"contract", cfg.Address.Hex(),
 		"expiresAt", cfg.ExpiresAt,
@@ -431,7 +433,8 @@ func estimateConfirmations(ctx context.Context, client *rpc.Client, chainID uint
 	if confirmations == 0 {
 		confirmations = 1
 	}
-	log.Infow("estimated confirmations from block time",
+	log.Infow(
+		"estimated confirmations from block time",
 		"chainID", chainID,
 		"sampleBlocks", blocks,
 		"avgBlockTime", blockTime,
