@@ -39,6 +39,7 @@ func main() {
 		"batchSize", cfg.Indexer.BatchSize,
 		"verifyBatchSize", cfg.Indexer.VerifyBatchSize,
 		"confirmations", cfg.Indexer.Confirmations,
+		"confirmationTime", cfg.Indexer.ConfirmationTime.String(),
 		"tailRescanDepth", cfg.Indexer.TailRescanDepth,
 		"rpcs", strings.Join(cfg.RPCs, ","),
 	)
@@ -78,6 +79,7 @@ func main() {
 		BatchSize:            cfg.Indexer.BatchSize,
 		VerifyBatchSize:      cfg.Indexer.VerifyBatchSize,
 		Confirmations:        cfg.Indexer.Confirmations,
+		ConfirmationTime:     cfg.Indexer.ConfirmationTime,
 		TailRescanDepth:      cfg.Indexer.TailRescanDepth,
 		ContractSyncInterval: cfg.Indexer.ContractSyncInterval,
 		AutoRPC:              autoRPC,

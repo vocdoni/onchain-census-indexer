@@ -40,6 +40,7 @@ type IndexerConfig struct {
 	BatchSize            uint64        `mapstructure:"batchSize"`
 	VerifyBatchSize      uint64        `mapstructure:"verifyBatchSize"`
 	Confirmations        uint64        `mapstructure:"confirmations"`
+	ConfirmationTime     time.Duration `mapstructure:"confirmationTime"`
 	TailRescanDepth      uint64        `mapstructure:"tailRescanDepth"`
 }
 
@@ -62,6 +63,7 @@ func LoadConfig() (*Config, error) {
 	pflag.Uint64("indexer.batchSize", 50, "Block batch size per filterLogs")
 	pflag.Uint64("indexer.verifyBatchSize", 0, "Block batch size per verification rescan (defaults to batch size)")
 	pflag.Uint64("indexer.confirmations", 12, "Confirmation depth before blocks are considered safe to verify")
+	pflag.Duration("indexer.confirmationTime", 0, "Target confirmation time; when set, overrides indexer.confirmations with a per-chain block count derived from the observed block time")
 	pflag.Uint64("indexer.tailRescanDepth", 0, "Depth of the verified tail window to continuously rescan (defaults to verify batch size)")
 	pflag.String("log.level", log.LogLevelDebug, "Log level (debug, info, warn, error)")
 	pflag.Parse()
@@ -84,6 +86,7 @@ func LoadConfig() (*Config, error) {
 	_ = config.BindEnv("indexer.batchSize", "BATCH_SIZE")
 	_ = config.BindEnv("indexer.verifyBatchSize", "VERIFY_BATCH_SIZE")
 	_ = config.BindEnv("indexer.confirmations", "CONFIRMATIONS")
+	_ = config.BindEnv("indexer.confirmationTime", "CONFIRMATION_TIME")
 	_ = config.BindEnv("indexer.tailRescanDepth", "TAIL_RESCAN_DEPTH")
 	_ = config.BindEnv("log.level", "LOG_LEVEL")
 

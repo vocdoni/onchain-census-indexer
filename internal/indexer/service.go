@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ type ServiceConfig struct {
 	BatchSize            uint64
 	VerifyBatchSize      uint64
 	Confirmations        uint64
+	ConfirmationTime     time.Duration
 	TailRescanDepth      uint64
 	ContractSyncInterval time.Duration
 	AutoRPC              bool
@@ -92,6 +94,7 @@ type Service struct {
 	batchSize            uint64
 	verifyBatchSize      uint64
 	confirmations        uint64
+	confirmationTime     time.Duration
 	tailRescanDepth      uint64
 	contractSyncInterval time.Duration
 	autoRPC              bool
@@ -133,6 +136,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		batchSize:            cfg.BatchSize,
 		verifyBatchSize:      cfg.VerifyBatchSize,
 		confirmations:        cfg.Confirmations,
+		confirmationTime:     cfg.ConfirmationTime,
 		tailRescanDepth:      cfg.TailRescanDepth,
 		contractSyncInterval: cfg.ContractSyncInterval,
 		autoRPC:              cfg.AutoRPC,
@@ -248,6 +252,19 @@ func (s *Service) ensureRegistered(ctx context.Context, cfg ContractInfo, errCh 
 			"startBlock", cfg.StartBlock,
 		)
 	}
+	confirmations := s.confirmations
+	if s.confirmationTime > 0 {
+		computed, err := estimateConfirmations(ctx, client, cfg.ChainID, s.confirmationTime)
+		if err != nil {
+			log.Warnw("failed to estimate confirmations from block time, falling back to fixed count",
+				"chainID", cfg.ChainID,
+				"confirmationTime", s.confirmationTime,
+				"fallback", confirmations,
+				"err", err)
+		} else {
+			confirmations = computed
+		}
+	}
 	idx, err := New(Config{
 		Client:          client,
 		Store:           s.store,
@@ -257,7 +274,7 @@ func (s *Service) ensureRegistered(ctx context.Context, cfg ContractInfo, errCh 
 		PollInterval:    s.pollInterval,
 		BatchSize:       s.batchSize,
 		VerifyBatchSize: s.verifyBatchSize,
-		Confirmations:   s.confirmations,
+		Confirmations:   confirmations,
 		TailRescanDepth: s.tailRescanDepth,
 	})
 	if err != nil {
@@ -374,6 +391,54 @@ func (s *Service) sendErr(errCh chan<- error, err error) {
 	case errCh <- err:
 	default:
 	}
+}
+
+// estimateConfirmations computes a block confirmation count that covers the
+// given target duration based on the chain's observed average block time.
+// It samples 50 recent blocks (or fewer if the chain is young) to estimate
+// block time, then returns ceil(confirmationTime / blockTime), minimum 1.
+func estimateConfirmations(ctx context.Context, client *rpc.Client, chainID uint64, confirmationTime time.Duration) (uint64, error) {
+	const sampleSize = 50
+	head, err := client.BlockNumber(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("fetch head block: %w", err)
+	}
+	sampleFrom := uint64(0)
+	if head > sampleSize {
+		sampleFrom = head - sampleSize
+	}
+	if sampleFrom == head {
+		return 1, nil
+	}
+	headHeader, err := client.HeaderByNumber(ctx, new(big.Int).SetUint64(head))
+	if err != nil {
+		return 0, fmt.Errorf("fetch head header: %w", err)
+	}
+	fromHeader, err := client.HeaderByNumber(ctx, new(big.Int).SetUint64(sampleFrom))
+	if err != nil {
+		return 0, fmt.Errorf("fetch sample header at block %d: %w", sampleFrom, err)
+	}
+	elapsed := time.Duration(headHeader.Time-fromHeader.Time) * time.Second
+	blocks := head - sampleFrom
+	if elapsed == 0 || blocks == 0 {
+		return 1, nil
+	}
+	blockTime := elapsed / time.Duration(blocks)
+	if blockTime == 0 {
+		return 1, nil
+	}
+	confirmations := uint64((confirmationTime + blockTime - 1) / blockTime)
+	if confirmations == 0 {
+		confirmations = 1
+	}
+	log.Infow("estimated confirmations from block time",
+		"chainID", chainID,
+		"sampleBlocks", blocks,
+		"avgBlockTime", blockTime,
+		"confirmationTime", confirmationTime,
+		"confirmations", confirmations,
+	)
+	return confirmations, nil
 }
 
 func addChainlistEndpoints(chainID uint64, maxEndpoints int, pool *rpc.Web3Pool) (int, error) {
